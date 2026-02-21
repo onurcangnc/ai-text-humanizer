@@ -123,3 +123,39 @@ for text, metrics, strategy, changes in variants:
 ├── training_data/           # Generated AI texts (gitignored)
 └── learning_data/           # Q-tables, synonym success rates (gitignored)
 ```
+
+## Changelog
+
+### Feb 20–21, 2025
+
+**Synonym Engine Overhaul**
+- Replaced WordNet synonym lookup with **BERT Masked Language Model** (bert-base-uncased) — context-aware synonyms that fit naturally in sentences
+- Added **spell-check validation** (pyspellchecker) to reject misspelled BERT suggestions
+- Integrated **Parrot T5 paraphraser** as an optional 5th strategy (`USE_PARROT=true`)
+
+**Detector Ensemble Expansion**
+- Added **Winston AI** as an HTTP API detector (requires `WINSTON_API_KEY`)
+- Tested 5 free AI detector websites via Playwright headless scraping:
+  - mydetector.ai — free, no login, no captcha, returns per-sentence JSON scores
+  - xdetector.ai — works but rate-limited (1 free detection per session)
+  - notegpt.io — login required (unusable)
+  - decopy.ai — login required (unusable)
+  - scispace.com — CAPTCHA blocked (unusable)
+- Added **MyDetector.ai** as 4th detector with API response interception + contenteditable JS fill
+- Updated ensemble weights: ZeroGPT 0.30, ContentDetector 0.20, MyDetector.ai 0.35, Winston 0.15
+
+**Binoculars Investigation**
+- Installed Binoculars (open-source AI detector from UMD/CMU, ICML 2024)
+- Fixed transformers version conflict (Binoculars pins 4.31.0 vs sentence-transformers needs >=4.41)
+- Tested falcon-7b on CPU — impractical (50+ min per score, 14GB RAM)
+- Tested TinyLlama-1.1B on MPS (Apple Silicon) — model loading alone took 160s
+- Conclusion: Binoculars needs CUDA GPU; deferred to Windows deployment
+
+**Training Pipeline**
+- Ran training with `--max-texts 20 --train` using BERT MLM engine
+- Sample results: quantum_entanglement 52.0% → 12.9%, viking_age_norse 53.8% → 3.2%
+
+**Deployment**
+- Created GitHub repo (public): [onurcangnc/ai-text-humanizer](https://github.com/onurcangnc/ai-text-humanizer)
+- Added `.gitignore`, `requirements.txt` (cleaned from 372 → 17 deps), `.env.example`, `README.md`
+- Prepared for Windows CUDA deployment (Binoculars integration ready)
