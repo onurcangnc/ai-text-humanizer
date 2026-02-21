@@ -1,0 +1,35 @@
+[
+  {
+    "iteration": 1,
+    "score": 0.3628,
+    "best_score": 0.3628,
+    "strategy": "light",
+    "changes_count": 82,
+    "similarity": 0.958,
+    "improved": true
+  },
+  {
+    "iteration": 2,
+    "score": 0.3462,
+    "best_score": 0.3462,
+    "strategy": "human-noise",
+    "changes_count": 82,
+    "similarity": 0.943,
+    "improved": true
+  },
+  {
+    "iteration": 3,
+    "best_score": 0.3462,
+    "strategy": "none",
+    "improved": false
+  },
+  {
+    "iteration": 4,
+    "score": 0.2199,
+    "best_score": 0.2199,
+    "strategy": "light",
+    "changes_count": 82,
+    "similarity": 0.926,
+    "improved": true
+  }
+]

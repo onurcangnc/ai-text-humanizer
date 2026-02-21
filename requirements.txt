@@ -1,0 +1,30 @@
+# AI Text Humanizer — Dependencies
+
+# NLP & Text Processing
+nltk==3.9.2
+lemminflect==0.2.3
+pyspellchecker==0.8.4
+scikit-learn==1.6.1
+
+# Transformers (BERT MLM synonym engine)
+torch==2.8.0
+transformers==4.57.6
+tokenizers==0.22.2
+sentence-transformers==5.1.2
+safetensors==0.7.0
+
+# Paraphraser (optional — set USE_PARROT=true in .env)
+parrot @ git+https://github.com/PrithivirajDamodaran/Parrot_Paraphraser.git
+
+# Browser-based AI detectors (Playwright)
+playwright==1.57.0
+requests==2.32.4
+
+# LLM APIs (for training data generation)
+anthropic==0.75.0
+openai==1.102.0
+python-dotenv==1.0.1
+
+# Binoculars AI detector (optional — needs CUDA GPU)
+# Uncomment on Windows/Linux with NVIDIA GPU:
+# Binoculars @ git+https://github.com/ahans30/Binoculars.git

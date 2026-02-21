@@ -1,0 +1,20 @@
+# Environment
+.env
+venv/
+__pycache__/
+*.pyc
+
+# Training outputs (large files)
+training_data/
+learning_data/
+optimized_*.txt
+
+# Debug files
+debug_*.png
+*.output
+
+# OS
+.DS_Store
+
+# Model cache (will be re-downloaded)
+~/.cache/huggingface/
