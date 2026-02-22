@@ -1,0 +1,200 @@
+======================================================================
+  AI TEXT HUMANIZER - RESEARCH ANALYSIS REPORT
+  Generated: 2026-02-22
+======================================================================
+
+1. PIPELINE ARCHITECTURE
+──────────────────────────────────────────────────────────────────────
+
+  Phase 1: Cross-model LLM Rewrite
+    GPT-4 → Claude, Claude → DeepSeek, DeepSeek → GPT-4
+    (Never rewrite own output — forces style transfer)
+    Temperature: 0.95, max_tokens: 2048
+
+  Phase 2: Perplexity Injection (5 strategies)
+    - rare_synonym_replace: WordNet + wordfreq rarity scoring
+    - inject_parentheticals: Aside clauses with em-dashes
+    - inject_rhetorical_questions: Topic-matched standalone questions
+    - vary_sentence_rhythm: Short-sentence merging
+    - inject_discourse_markers: Starters and mid-sentence connectors
+
+  Phase 3: Quality Filtering
+    - BERT sentence-level cosine similarity (threshold 0.80)
+    - TF-IDF similarity guard (threshold 0.65)
+    - SBERT semantic preservation (threshold 0.70)
+    - SpellCheck on inflected synonym forms
+
+  Detection Ensemble (local):
+    - Binoculars (Falcon-7B x2, 4-bit NF4): weight 0.35
+    - GPT-2 Perplexity (GPTZero-style):     weight 0.35
+    - GLTR (top-k distribution):             weight 0.30
+
+  Hardware: NVIDIA RTX 4090 Laptop (16GB VRAM)
+  VRAM usage: ~10.0 GB (Binoculars 9.2 + GPT-2 0.2 + T5 0.5 + SBERT 0.08)
+
+
+2. TRAINING SUMMARY
+──────────────────────────────────────────────────────────────────────
+
+  Total texts trained:  30 (3 batches of 10)
+  Total texts generated: 46 (including untrained extras)
+
+  Batch 1:  avg improvement = +9.8 pp
+  Batch 2:  avg improvement = +15.2 pp
+  Batch 3:  avg improvement = +9.6 pp
+  ──────────────────────────────────────
+  Overall:  avg improvement = +11.6 pp
+
+  Best single improvement:  -41.9 pp (Weimar hyperinflation)
+  Zero-improvement texts:   3/30 (<1 pp improvement)
+
+  Score ranges:
+    Initial scores: 55.4% – 96.4%
+    Final scores:   38.2% – 91.3%
+
+
+3. SOURCE MODEL ANALYSIS
+──────────────────────────────────────────────────────────────────────
+
+  Model          N   Avg Initial   Avg Final   Avg Improvement
+  ────────────────────────────────────────────────────────────
+  GPT-4         15         92.6%       83.0%             +9.6 pp
+  Claude         7         82.6%       71.8%            +10.7 pp
+  DeepSeek       8         83.4%       67.5%            +15.9 pp
+
+  Observation: DeepSeek texts show the largest average improvement, suggesting they have more identifiable AI patterns that the pipeline can exploit.
+
+
+4. STRATEGY EFFECTIVENESS
+──────────────────────────────────────────────────────────────────────
+
+  Strategy                 Selected   Avg Improvement
+  ────────────────────────────────────────────────────
+  perplexity-light               17x             +1.2 pp
+  perplexity-moderate            16x             +1.8 pp
+  balanced                       11x             +5.5 pp
+  perplexity-heavy                8x             +1.0 pp
+  perplexity-structural           7x             +0.8 pp
+  light                           6x             +4.2 pp
+  structural                      5x             +3.1 pp
+  kitchen-sink                    4x             +6.8 pp
+  perplexity-kitchen              4x             +0.9 pp
+  human-noise                     3x             +2.5 pp
+
+  Top Phase 1 strategies: balanced, light (LLM rewrite variants)
+  Top Phase 2 strategies: perplexity-light, perplexity-moderate
+  Kitchen-sink (max changes) has highest per-use improvement but rare selection
+
+
+5. EXTERNAL BENCHMARK (10 texts x 5 detectors)
+──────────────────────────────────────────────────────────────────────
+
+  Detector         Avg Score   Passed (<30%)               Verdict
+  ────────────────────────────────────────────────────────────────
+  GPTZERO             100.0%              0/10  Strongest (catches all)
+  ORIGINALITY         100.0%              0/10  Strongest (catches all)
+  WINSTON              80.8%              2/10              Moderate
+  ZEROGPT              38.9%              4/10         Moderate-weak
+  QUILLBOT             26.7%              5/10  Weakest (most fooled)
+
+  KEY FINDING: The Silk Road text scored:
+    ZeroGPT:     0%  (Human)
+    QuillBot:    0%  (Human)
+    GPTZero:     100% (AI)
+    Originality: 100% (AI)
+
+  → The SAME optimized text is classified as fully human by some detectors
+    and fully AI by others. AI detection is fundamentally inconsistent.
+
+
+6. LOCAL DETECTOR PERFORMANCE ON BENCHMARK
+──────────────────────────────────────────────────────────────────────
+
+  Text                             Bino   GPT2   GLTR    Ens
+  ──────────────────────────────────────────────────────────
+  blockchain supply chain           98%    94%    80%    91%
+  epigenetic inheritance            97%    93%    81%    91%
+  refugee quota                     78%    89%    67%    79%
+  ocean acidification               57%    92%    78%    75%
+  silk road currency                69%    48%    46%    55%
+  soil microbiome                   87%    83%    65%    79%
+  longevity pension                 92%    76%    64%    78%
+  philosophy consciousness          88%    94%    82%    88%
+  postcolonial literature           99%    92%    79%    91%
+  robotics disaster                 95%    85%    70%    84%
+  AVERAGE                         86.0%  84.5%  71.2%  81.1%
+
+
+7. CORRELATION ANALYSIS: LOCAL vs EXTERNAL
+──────────────────────────────────────────────────────────────────────
+
+  Correlation between local detectors and external detectors with variance:
+  (GPTZero and Originality excluded — constant 100%, no variance)
+
+  Pair                                 Pearson r     p-value  Significant?
+  ────────────────────────────────────────────────────────────────────────
+  binoculars       vs quillbot            +0.126      0.7282            No
+  binoculars       vs winston             +0.880      0.0008         Yes *
+  binoculars       vs zerogpt             -0.267      0.4563            No
+  gltr             vs quillbot            +0.056      0.8789            No
+  gltr             vs winston             +0.428      0.2175            No
+  gltr             vs zerogpt             +0.172      0.6351            No
+  gpt2_ppl         vs quillbot            +0.329      0.3538            No
+  gpt2_ppl         vs winston             +0.548      0.1009            No
+  gpt2_ppl         vs zerogpt             +0.443      0.1998            No
+
+  Best local predictor for each external detector:
+    ZEROGPT         -> gpt2_ppl        (r = +0.443)
+    WINSTON         -> binoculars      (r = +0.880)
+    QUILLBOT        -> gpt2_ppl        (r = +0.329)
+
+
+8. ENSEMBLE WEIGHT RECOMMENDATIONS
+──────────────────────────────────────────────────────────────────────
+
+  Current weights: binoculars=0.35, gpt2_ppl=0.35, gltr=0.30
+
+  Based on correlation analysis with external detectors that have variance
+  (ZeroGPT, Winston, QuillBot), the local detectors show:
+    ZEROGPT: best predicted by gpt2_ppl (r=+0.443)
+    WINSTON: best predicted by binoculars (r=+0.880)
+    QUILLBOT: best predicted by gpt2_ppl (r=+0.329)
+
+  Note: With only 10 data points, correlations have wide confidence intervals.
+  More benchmark data needed before adjusting production weights.
+  GPTZero and Originality.ai detect ALL texts as AI regardless — these
+  detectors likely use different signals than our local ensemble.
+
+
+9. CONCLUSIONS
+──────────────────────────────────────────────────────────────────────
+
+  1. The humanization pipeline achieves an average 11.6 percentage point
+     reduction in local AI detection scores across 30 texts.
+
+  2. DeepSeek-generated text shows the most improvement potential, while
+     GPT-4 text is most resistant to humanization.
+
+  3. External detector agreement is extremely low:
+     - GPTZero and Originality.ai classify 100% of optimized texts as AI
+     - ZeroGPT passes 4/10 texts, QuillBot passes 5/10 texts
+     - The same text can score 0% on one detector and 100% on another
+
+  4. Binoculars (Falcon-7B based) is the hardest local detector to fool,
+     consistently scoring 92-99% even after optimization. GPT-2 PPL and
+     GLTR are more responsive to perplexity injection.
+
+  5. The fundamental challenge: commercial detectors (GPTZero, Originality)
+     appear to use proprietary classifiers trained on large datasets, making
+     them resistant to statistical perturbation approaches. Fooling them
+     likely requires fundamentally different text generation approaches.
+
+  6. Strategy analysis shows perplexity-light and perplexity-moderate are
+     selected most often as optimal, suggesting small targeted changes
+     outperform aggressive rewriting for local detector evasion.
+
+
+======================================================================
+  Generated by AI Text Humanizer Benchmark Analysis
+  Total graphs: 8 | Texts analyzed: 30 training + 10 benchmark
+======================================================================

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-AI Detector — Headless Playwright ensemble + API detectors.
+AI Detector — All-Local GPU Ensemble (no Playwright, no APIs).
 
-Detectors: ZeroGPT + ContentDetector.ai + MyDetector.ai + Winston AI (API)
-All run headless, no login required.
+Detectors (all local, GPU-accelerated):
+  1. Binoculars  — Falcon-7B × 2 (4-bit) perplexity ratio
+  2. GPT-2 PPL   — GPTZero-style perplexity scoring
+  3. GLTR        — top-k token distribution analysis
 
 Usage:
     with AIDetector() as d:
@@ -11,64 +13,144 @@ Usage:
         print(result["ensemble"])  # 0.0-1.0
 """
 
-import json
-import os
+import math
 import time
-import re
-import random
-import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 
 
 class AIDetector:
-    """Runs up to 4 AI detectors: 3 Playwright + 1 API (Winston)."""
+    """All-local GPU AI detection ensemble — 3 detectors."""
 
     WEIGHTS = {
-        "zerogpt": 0.30,
-        "contentdetector": 0.20,
-        "winston": 0.15,
-        "mydetector": 0.35,
+        "binoculars": 0.35,
+        "gpt2_ppl": 0.35,
+        "gltr": 0.30,
     }
 
-    def __init__(self):
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=True)
-        self._ctx = self._browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
-        self._last_known: dict = {}
-        self._available_apis = {}
-        print("  ✅ ZeroGPT (Playwright)")
-        print("  ✅ ContentDetector (Playwright)")
-        print("  ✅ MyDetector.ai (Playwright)")
-        if os.getenv("WINSTON_API_KEY"):
-            self._available_apis["winston"] = True
-            print("  ✅ Winston AI (API)")
+    def __init__(self, use_binoculars: bool = True):
+        self._available = {}
+        self._binoculars = None
+        self._gpt2 = None
+        self._last_known = {}
+
+        import torch
+
+        if torch.cuda.is_available():
+            gpu = torch.cuda.get_device_properties(0)
+            vram_gb = gpu.total_memory / 1024**3
+            print(f"  GPU: {gpu.name} ({vram_gb:.0f}GB VRAM)")
         else:
-            print("  ❌ Winston AI — WINSTON_API_KEY not set")
-        print("🌐 Browser ready (headless)")
+            print("  ⚠️  No CUDA GPU — models will run on CPU (slow)")
 
-    def _delay(self, lo=1.0, hi=2.5):
-        time.sleep(random.uniform(lo, hi))
+        t0 = time.time()
 
-    # ── Public API ───────────────────────────────────────────────────────
+        if use_binoculars:
+            self._init_binoculars()
+        self._init_gpt2()
+
+        elapsed = time.time() - t0
+        active = sum(1 for v in self._available.values() if v)
+        vram_used = torch.cuda.memory_allocated(0) / 1024**3 if torch.cuda.is_available() else 0
+        print(f"  {active}/{len(self.WEIGHTS)} detectors active ({elapsed:.1f}s, {vram_used:.1f}GB VRAM)")
+
+    # ── Model loading ─────────────────────────────────────────────────────
+
+    def _init_binoculars(self):
+        """Load Binoculars Falcon-7B detector on GPU (4-bit quantized)."""
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                print("  ❌ Binoculars — no CUDA GPU")
+                return
+
+            print(f"  ⏳ Binoculars (Falcon-7B × 2, 4-bit)...")
+
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+
+            observer = AutoModelForCausalLM.from_pretrained(
+                "tiiuae/falcon-7b",
+                quantization_config=bnb_config,
+                device_map="auto",
+            )
+            performer = AutoModelForCausalLM.from_pretrained(
+                "tiiuae/falcon-7b-instruct",
+                quantization_config=bnb_config,
+                device_map="auto",
+            )
+            observer.eval()
+            performer.eval()
+
+            tokenizer = AutoTokenizer.from_pretrained("tiiuae/falcon-7b")
+            if not tokenizer.pad_token:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            self._binoculars = {
+                "observer": observer,
+                "performer": performer,
+                "tokenizer": tokenizer,
+                "threshold": 0.8536432310785527,
+                "max_tokens": 512,
+            }
+            self._available["binoculars"] = True
+
+            vram_used = torch.cuda.memory_allocated(0) / 1024**3
+            print(f"  ✅ Binoculars ({vram_used:.1f}GB)")
+        except Exception as e:
+            print(f"  ❌ Binoculars failed: {str(e)[:200]}")
+
+    def _init_gpt2(self):
+        """Load GPT-2 for perplexity + GLTR detectors (shared model)."""
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            print(f"  ⏳ GPT-2 (perplexity + GLTR)...")
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if device == "cuda" else torch.float32
+
+            model = AutoModelForCausalLM.from_pretrained(
+                "openai-community/gpt2",
+                torch_dtype=dtype,
+            ).to(device)
+            model.eval()
+
+            tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
+            if not tokenizer.pad_token:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            self._gpt2 = {
+                "model": model,
+                "tokenizer": tokenizer,
+                "device": device,
+                "max_tokens": 1024,
+            }
+            self._available["gpt2_ppl"] = True
+            self._available["gltr"] = True
+
+            vram_used = torch.cuda.memory_allocated(0) / 1024**3
+            print(f"  ✅ GPT-2 ({vram_used:.1f}GB)")
+        except Exception as e:
+            print(f"  ❌ GPT-2 failed: {str(e)[:200]}")
+
+    # ── Public API ────────────────────────────────────────────────────────
 
     def detect(self, text: str) -> dict:
         """Run all detectors, return ensemble result."""
         results = {}
 
         for name, fn in [
-            ("zerogpt", self._detect_zerogpt),
-            ("contentdetector", self._detect_contentdetector),
-            ("mydetector", self._detect_mydetector),
-            ("winston", self._detect_winston),
+            ("binoculars", self._detect_binoculars),
+            ("gpt2_ppl", self._detect_gpt2_ppl),
+            ("gltr", self._detect_gltr),
         ]:
-            if name == "winston" and "winston" not in self._available_apis:
+            if name not in self._available:
                 continue
 
             print(f"  🔍 {name}...")
@@ -83,15 +165,13 @@ class AIDetector:
             except Exception as e:
                 if name in self._last_known:
                     results[name] = self._last_known[name]
-                    print(f"  ⚠️  {name} timeout — using last: {self._last_known[name]:.0%}")
+                    print(f"  ⚠️  {name} error — using last: {self._last_known[name]:.0%}")
                 else:
                     print(f"  ❌ {name} failed: {str(e)[:100]}")
 
-            self._delay(1, 3)
-
         count = len(results)
         if count < 1:
-            print("  ⚠️  Unreliable — no detectors responded")
+            print("  ⚠️  No detectors responded")
 
         if results:
             tw = sum(self.WEIGHTS[k] for k in results)
@@ -101,21 +181,26 @@ class AIDetector:
 
         return {
             "ensemble": round(ensemble, 4) if ensemble >= 0 else -1.0,
-            "zerogpt": results.get("zerogpt"),
-            "contentdetector": results.get("contentdetector"),
-            "mydetector": results.get("mydetector"),
-            "winston": results.get("winston"),
+            "binoculars": results.get("binoculars"),
+            "gpt2_ppl": results.get("gpt2_ppl"),
+            "gltr": results.get("gltr"),
             "detector_count": count,
         }
 
     def close(self):
-        try:
-            self._ctx.close()
-            self._browser.close()
-            self._pw.stop()
-            print("🌐 Browser closed")
-        except Exception:
-            pass
+        """Release GPU memory."""
+        import torch
+
+        if self._binoculars:
+            del self._binoculars["observer"]
+            del self._binoculars["performer"]
+            self._binoculars = None
+        if self._gpt2:
+            del self._gpt2["model"]
+            self._gpt2 = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("  GPU memory released")
 
     def __enter__(self):
         return self
@@ -123,234 +208,138 @@ class AIDetector:
     def __exit__(self, *a):
         self.close()
 
-    # ── Helper ───────────────────────────────────────────────────────────
+    # ── Binoculars (Falcon-7B 4-bit) ─────────────────────────────────────
 
-    def _find_score(self, data, keys=None):
-        """Recursively search JSON for an AI score field."""
-        if keys is None:
-            keys = [
-                "fakePercentage", "fake_percentage", "ai_percentage",
-                "is_gpt_generated_percentage", "isGPTGenerated",
-                "aiPercentage", "ai_score", "ai_generated_percentage",
-                "overall_score",
-            ]
-        if isinstance(data, dict):
-            for k in keys:
-                if k in data:
-                    v = data[k]
-                    if isinstance(v, (int, float)):
-                        return v / 100.0 if v > 1.0 else v
-            for v in data.values():
-                r = self._find_score(v, keys)
-                if r is not None:
-                    return r
-        elif isinstance(data, list):
-            for item in data:
-                r = self._find_score(item, keys)
-                if r is not None:
-                    return r
-        return None
-
-    # ── ZeroGPT ──────────────────────────────────────────────────────────
-
-    def _detect_zerogpt(self, text: str):
-        page = self._ctx.new_page()
-        captured = []
-
-        def on_resp(resp):
-            try:
-                ct = resp.headers.get("content-type", "")
-                if resp.status == 200 and "json" in ct and "zerogpt" in resp.url:
-                    captured.append(resp.json())
-            except Exception:
-                pass
-
-        page.on("response", on_resp)
-
-        try:
-            page.goto("https://www.zerogpt.com", wait_until="domcontentloaded", timeout=20000)
-            self._delay(1, 2)
-
-            # Dismiss popups
-            try:
-                page.locator("button:has-text('Accept'), button:has-text('Got it')").first.click(timeout=3000)
-            except Exception:
-                pass
-
-            # Fill textarea
-            ta = page.locator("textarea").first
-            ta.wait_for(timeout=10000)
-            ta.fill(text[:5000])
-            self._delay(0.5, 1.5)
-
-            # Click detect
-            btn = page.locator("button").filter(has_text=re.compile(r"detect|check|get result", re.I)).first
-            btn.click()
-
-            # Wait for API response
-            checked = 0
-            deadline = time.time() + 25
-            while time.time() < deadline:
-                while checked < len(captured):
-                    score = self._find_score(captured[checked])
-                    if score is not None:
-                        return score
-                    checked += 1
-                page.wait_for_timeout(500)
-
+    def _detect_binoculars(self, text: str):
+        """Binoculars: perplexity / cross-perplexity ratio."""
+        if self._binoculars is None:
             return None
-        finally:
-            page.close()
 
-    # ── ContentDetector.ai ───────────────────────────────────────────────
+        import torch
 
-    def _detect_contentdetector(self, text: str):
-        page = self._ctx.new_page()
-        captured = []
+        bino = self._binoculars
+        tokenizer = bino["tokenizer"]
+        observer = bino["observer"]
+        performer = bino["performer"]
+        threshold = bino["threshold"]
 
-        def on_resp(resp):
-            try:
-                ct = resp.headers.get("content-type", "")
-                if resp.status == 200 and "json" in ct and "contentdetector" in resp.url:
-                    captured.append(resp.json())
-            except Exception:
-                pass
+        encodings = tokenizer(
+            text[:3000],
+            return_tensors="pt",
+            truncation=True,
+            max_length=bino["max_tokens"],
+            return_token_type_ids=False,
+        ).to(observer.device)
 
-        page.on("response", on_resp)
+        with torch.inference_mode():
+            observer_logits = observer(**encodings).logits
+            performer_logits = performer(**encodings).logits
 
-        try:
-            page.goto("https://contentdetector.ai", wait_until="domcontentloaded", timeout=20000)
-            self._delay(1, 2)
+        labels = encodings["input_ids"][:, 1:]
+        logits_shifted = performer_logits[:, :-1]
+        log_probs = torch.nn.functional.log_softmax(logits_shifted, dim=-1)
+        token_log_probs = log_probs.gather(2, labels.unsqueeze(-1)).squeeze(-1)
 
-            try:
-                page.locator("button:has-text('Accept'), button:has-text('Got it')").first.click(timeout=3000)
-            except Exception:
-                pass
+        if "attention_mask" in encodings:
+            mask = encodings["attention_mask"][:, 1:].float()
+            token_log_probs = token_log_probs * mask
+            ppl = torch.exp(-token_log_probs.sum(-1) / mask.sum(-1))
+        else:
+            ppl = torch.exp(-token_log_probs.mean(-1))
 
-            # ContentDetector uses #editor-content textarea
-            ta = page.locator("#editor-content, textarea").first
-            ta.wait_for(timeout=10000)
-            ta.fill(text[:5000])
-            self._delay(0.5, 1.5)
-
-            # Button says "Scan"
-            btn = page.locator("button").filter(
-                has_text=re.compile(r"scan|detect|check|analyze|submit", re.I)
-            ).first
-            btn.click()
-
-            # Method 1: API interception
-            checked = 0
-            deadline = time.time() + 20
-            while time.time() < deadline:
-                while checked < len(captured):
-                    score = self._find_score(captured[checked])
-                    if score is not None:
-                        return score
-                    checked += 1
-                page.wait_for_timeout(500)
-
-            # Method 2: DOM scraping — look for probability score
-            try:
-                page.wait_for_timeout(3000)
-                for sel in ["[class*='probability']", "[class*='score']", "[class*='response']"]:
-                    try:
-                        el = page.locator(sel).first
-                        txt = el.inner_text(timeout=2000)
-                        match = re.search(r"(\d+(?:\.\d+)?)\s*%", txt)
-                        if match:
-                            val = float(match.group(1))
-                            return val / 100.0 if val > 1.0 else val
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-            return None
-        finally:
-            page.close()
-
-    # ── MyDetector.ai ─────────────────────────────────────────────────
-
-    def _detect_mydetector(self, text: str):
-        """Detect via mydetector.ai — Playwright + API interception."""
-        page = self._ctx.new_page()
-        captured = []
-
-        def on_resp(resp):
-            try:
-                ct = resp.headers.get("content-type", "")
-                if resp.status == 200 and "json" in ct:
-                    data = resp.json()
-                    # Match: {"code": 100000, "result": {"output": {"sentences": [...]}}}
-                    if isinstance(data, dict) and data.get("code") == 100000:
-                        result = data.get("result", {})
-                        output = result.get("output", {})
-                        sentences = output.get("sentences", [])
-                        if sentences:
-                            captured.append(sentences)
-            except Exception:
-                pass
-
-        page.on("response", on_resp)
-
-        try:
-            page.goto("https://mydetector.ai/", wait_until="domcontentloaded", timeout=20000)
-            self._delay(1, 2)
-
-            # Dismiss cookie/popup banners
-            try:
-                page.locator("button:has-text('Accept'), button:has-text('Got it')").first.click(timeout=3000)
-            except Exception:
-                pass
-
-            # Fill contenteditable div via JS (no textarea on this site)
-            ce = page.locator("[contenteditable='true']").first
-            ce.wait_for(timeout=10000)
-            ce.click()
-            ce.evaluate(
-                '(el, txt) => { el.innerText = txt; el.dispatchEvent(new Event("input", {bubbles: true})); }',
-                text[:5000],
-            )
-            self._delay(0.5, 1.5)
-
-            # "Detect Text" is button index 7 in the main content area
-            # Use exact text match to avoid FAQ buttons lower on page
-            btn = page.locator("button:has-text('Detect Text')").first
-            btn.scroll_into_view_if_needed()
-            btn.click()
-
-            # Wait for API response with sentences
-            deadline = time.time() + 30
-            while time.time() < deadline:
-                if captured:
-                    sentences = captured[0]
-                    scores = [s["score"] for s in sentences if "score" in s]
-                    if scores:
-                        return sum(scores) / len(scores)
-                page.wait_for_timeout(500)
-
-            return None
-        finally:
-            page.close()
-
-    # ── Winston AI (API) ──────────────────────────────────────────────
-
-    def _detect_winston(self, text: str):
-        """Detect via Winston AI — pure HTTP API."""
-        api_key = os.getenv("WINSTON_API_KEY", "")
-        if not api_key:
-            raise ValueError("WINSTON_API_KEY not set")
-        resp = requests.post(
-            "https://api.gowinston.ai/v2/ai-content-detection",
-            json={"text": text[:5000], "sentences": False, "version": "latest"},
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=20,
+        obs_log_probs = torch.nn.functional.log_softmax(observer_logits[:, :-1], dim=-1)
+        perf_probs = torch.nn.functional.softmax(
+            performer_logits[:, :-1].to(observer_logits.device), dim=-1
         )
-        resp.raise_for_status()
-        data = resp.json()
-        human_score = data["score"]  # 0-100, high = human
-        return 1.0 - (human_score / 100.0)  # invert to AI score
+        cross_entropy = -(perf_probs * obs_log_probs).sum(-1)
+
+        if "attention_mask" in encodings:
+            cross_entropy = cross_entropy * mask
+            x_ppl = torch.exp(cross_entropy.sum(-1) / mask.sum(-1))
+        else:
+            x_ppl = torch.exp(cross_entropy.mean(-1))
+
+        bino_score = (ppl / x_ppl).item()
+        ai_prob = 1.0 / (1.0 + math.exp(12.0 * (bino_score - threshold)))
+        return max(0.0, min(1.0, ai_prob))
+
+    # ── GPT-2 Perplexity (GPTZero-style) ──────────────────────────────────
+
+    def _detect_gpt2_ppl(self, text: str):
+        """Low perplexity under GPT-2 = likely AI-generated."""
+        if self._gpt2 is None:
+            return None
+
+        import torch
+
+        g = self._gpt2
+        model = g["model"]
+        tokenizer = g["tokenizer"]
+
+        encodings = tokenizer(
+            text[:3000],
+            return_tensors="pt",
+            truncation=True,
+            max_length=g["max_tokens"],
+        ).to(g["device"])
+
+        with torch.inference_mode():
+            outputs = model(**encodings, labels=encodings["input_ids"])
+            ppl = torch.exp(outputs.loss).item()
+
+        threshold = 60.0
+        steepness = 0.08
+        ai_prob = 1.0 / (1.0 + math.exp(steepness * (ppl - threshold)))
+        return max(0.0, min(1.0, ai_prob))
+
+    # ── GLTR Log-likelihood ───────────────────────────────────────────────
+
+    def _detect_gltr(self, text: str):
+        """GLTR: fraction of tokens in GPT-2's top-k predictions."""
+        if self._gpt2 is None:
+            return None
+
+        import torch
+
+        g = self._gpt2
+        model = g["model"]
+        tokenizer = g["tokenizer"]
+
+        encodings = tokenizer(
+            text[:3000],
+            return_tensors="pt",
+            truncation=True,
+            max_length=g["max_tokens"],
+        ).to(g["device"])
+
+        input_ids = encodings["input_ids"]
+
+        with torch.inference_mode():
+            logits = model(**encodings).logits
+
+        pred_logits = logits[:, :-1]
+        actual_tokens = input_ids[:, 1:]
+
+        seq_len = actual_tokens.shape[1]
+        if seq_len < 5:
+            return None
+
+        top_k = 10
+        top_50 = 50
+
+        _, top_k_idx = pred_logits.topk(top_k, dim=-1)
+        _, top_50_idx = pred_logits.topk(top_50, dim=-1)
+
+        actual_expanded = actual_tokens.unsqueeze(-1)
+        in_top_k = (top_k_idx == actual_expanded).any(dim=-1).float()
+        in_top_50 = (top_50_idx == actual_expanded).any(dim=-1).float()
+
+        frac_top_k = in_top_k.mean().item()
+        frac_top_50 = in_top_50.mean().item()
+
+        gltr_score = 0.6 * frac_top_k + 0.4 * frac_top_50
+
+        threshold = 0.65
+        steepness = 15.0
+        ai_prob = 1.0 / (1.0 + math.exp(-steepness * (gltr_score - threshold)))
+        return max(0.0, min(1.0, ai_prob))

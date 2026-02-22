@@ -1,35 +1,36 @@
 [
   {
+    "iteration": 0,
+    "score": 0.9196,
+    "best_score": 0.9196,
+    "strategy": "llm-rewrite",
+    "improved": true
+  },
+  {
     "iteration": 1,
-    "score": 0.3628,
-    "best_score": 0.3628,
-    "strategy": "light",
-    "changes_count": 82,
-    "similarity": 0.958,
+    "score": 0.8801,
+    "best_score": 0.8801,
+    "strategy": "classifier-heavy",
+    "changes_count": 16,
+    "similarity": 0.803,
     "improved": true
   },
   {
     "iteration": 2,
-    "score": 0.3462,
-    "best_score": 0.3462,
-    "strategy": "human-noise",
-    "changes_count": 82,
-    "similarity": 0.943,
+    "score": 0.8507,
+    "best_score": 0.8507,
+    "strategy": "classifier-heavy",
+    "changes_count": 5,
+    "similarity": 0.797,
     "improved": true
   },
   {
     "iteration": 3,
-    "best_score": 0.3462,
-    "strategy": "none",
-    "improved": false
-  },
-  {
-    "iteration": 4,
-    "score": 0.2199,
-    "best_score": 0.2199,
-    "strategy": "light",
-    "changes_count": 82,
-    "similarity": 0.926,
+    "score": 0.8402,
+    "best_score": 0.8402,
+    "strategy": "classifier-moderate",
+    "changes_count": 4,
+    "similarity": 0.792,
     "improved": true
   }
 ]

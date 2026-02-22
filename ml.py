@@ -36,9 +36,14 @@ from spellchecker import SpellChecker
 _spell = SpellChecker()
 
 # Ensure NLTK data is available
-for _pkg in ('averaged_perceptron_tagger_eng', 'punkt_tab'):
+for _pkg in ('averaged_perceptron_tagger_eng', 'punkt_tab', 'wordnet'):
     try:
-        nltk.data.find(f'tokenizers/{_pkg}' if _pkg == 'punkt_tab' else f'taggers/{_pkg}')
+        if _pkg == 'punkt_tab':
+            nltk.data.find(f'tokenizers/{_pkg}')
+        elif _pkg == 'wordnet':
+            nltk.data.find(f'corpora/{_pkg}')
+        else:
+            nltk.data.find(f'taggers/{_pkg}')
     except LookupError:
         nltk.download(_pkg, quiet=True)
 
@@ -78,6 +83,14 @@ _AMBIGUOUS_WORDS = frozenset({
     'explosion', 'transformation', 'culture', 'cultural',
     'become', 'create', 'creating', 'dimension', 'dimensions',
     'offer', 'used', 'style',
+    # Noun/verb crossover — replacing these in compound phrases corrupts meaning
+    'change', 'changes', 'work', 'works', 'lead', 'leads',
+    'report', 'reports', 'study', 'studies', 'value', 'values',
+    'process', 'processes', 'rate', 'rates', 'range', 'ranges',
+    'approach', 'model', 'models', 'system', 'systems', 'growth',
+    'research', 'impact', 'impacts', 'effect', 'effects',
+    'species', 'threat', 'threats', 'damage', 'conditions',
+    'balance', 'structure', 'function', 'functions', 'focus',
 })
 
 def _penn_to_upos(tag: str):
@@ -132,86 +145,237 @@ def _reconstruct_text(original: str, orig_tokens: List[str], new_tokens: List[st
     return result
 
 
-class BERTSynonymSwapper:
-    """BERT Masked Language Model synonym replacement.
-    Lazy-loads bert-base-uncased (~440MB) on first use."""
+class LLMRewriter:
+    """Cross-model LLM rewriting for high-quality humanization.
+    GPT-4 text → Claude rewrites, Claude → DeepSeek, DeepSeek → GPT-4.
+    Falls back to any available model if preferred one unavailable."""
 
-    def __init__(self, model_name: str = "bert-base-uncased", top_k: int = 10):
-        self._model_name = model_name
-        self._top_k = top_k
-        self._pipeline = None
-
-    def _load_pipeline(self):
-        """Lazy-load the fill-mask pipeline."""
-        if self._pipeline is None:
-            from transformers import pipeline as hf_pipeline
-            self._pipeline = hf_pipeline(
-                "fill-mask", model=self._model_name, top_k=self._top_k
-            )
-            print(f"   🤖 BERT MLM loaded ({self._model_name})")
-        return self._pipeline
-
-    def get_replacements(self, context: str, target_word: str,
-                         target_pos: str) -> List[str]:
-        """Mask target_word in context, return filtered BERT predictions."""
-        pipe = self._load_pipeline()
-        try:
-            results = pipe(context)
-        except Exception:
-            return []
-
-        candidates = []
-        for r in results:
-            token = r["token_str"].strip()
-            if (token.startswith("##")
-                    or token.lower() == target_word.lower()
-                    or token.lower() in _STOPWORDS
-                    or token.lower() in _AMBIGUOUS_WORDS
-                    or len(token) < 4
-                    or not token.isalpha()
-                    or token.lower() in _spell.unknown([token.lower()])
-                    or not _pos_compatible(target_pos, token)):
-                continue
-            candidates.append(token)
-        return candidates
-
-    @staticmethod
-    def _restore_capitalization(original: str, replacement: str) -> str:
-        """Transfer capitalization pattern from original to replacement."""
-        if original.isupper():
-            return replacement.upper()
-        if original[0].isupper():
-            return replacement[0].upper() + replacement[1:]
-        return replacement.lower()
-
-
-class ParrotParaphraser:
-    """Sentence-level paraphrasing using Parrot (T5-based).
-    Lazy-loads prithivida/parrot_paraphraser_on_T5 on first use."""
-
-    STRATEGY_RATIOS = {
-        "light": 0.3,
-        "balanced": 0.5,
-        "structural": 0.4,
-        "human-noise": 0.35,
-        "kitchen-sink": 0.6,
+    _CROSS_MODEL = {
+        'gpt4': 'anthropic',
+        'claude': 'deepseek',
+        'deepseek': 'openai',
+        'gemini': 'openai',
+        'unknown': None,  # pick first available
     }
 
+    _REWRITE_PROMPT = """Rewrite this academic text so it sounds like a real university student wrote it — not a polished AI. Follow these rules strictly:
+
+STRUCTURE & RHYTHM:
+- Dramatically vary sentence length. Mix short punchy sentences (5-8 words) with longer explanatory ones (25-30 words). Not every sentence should be medium-length.
+- Some paragraphs should be shorter than others. Don't make them all the same length.
+- Break one or two long sentences into fragments for emphasis. Like this.
+
+TONE & WORD CHOICE:
+- Use contractions naturally throughout: "don't", "isn't", "it's", "they're", "wouldn't", "can't"
+- Start some sentences with "And", "But", "So", "Also" — real students do this
+- Use first person sparingly (1-2 times total): "I think", "in my view", "as I see it"
+- Include hedging: "probably", "it seems like", "arguably", "to some extent", "more or less"
+- Use slightly informal phrasing occasionally: "a big deal", "kind of", "a lot of", "pretty much"
+- NEVER use formal transitions: no "Furthermore", "Moreover", "Consequently", "Nevertheless", "In conclusion", "Additionally". Use "Also", "Plus", "But", "So", "Still", "That said", "On top of that" instead.
+
+CLASSIFIER-BYPASS SIGNALS (these fool AI-detection classifiers):
+- Use at least 5-7 contractions throughout (don't, isn't, it's, they're, won't, can't, wouldn't, hasn't, there's)
+- Include 2-3 self-corrections or hedging: "well, actually", "or rather", "I mean", "to put it differently"
+- Add 1-2 rhetorical asides in parentheses: (which is pretty fascinating when you think about it), (not that this is surprising), (at least from what we know so far)
+- Vary paragraph length dramatically: one paragraph should be 2-3 sentences, another should be 5-6 sentences
+- Include exactly ONE slightly colloquial comparison or analogy that a student might use
+- Start at least 2 sentences with lowercase conjunctions: "and", "but", "so", "or"
+- Use at least 1 dash-interrupted thought: "The main concern — and this is where it gets interesting — is that..."
+- End one sentence with a mild qualifier: "...at least for now.", "...or so it seems.", "...though that's debatable."
+- Do NOT make every sentence perfect — one sentence can be slightly wordy or have a minor structural quirk (like starting with "There is" or using passive voice unnecessarily) — this mimics real student writing imperfections
+
+ABSOLUTE CONSTRAINTS:
+- ALL facts, numbers, technical terms, and proper nouns must remain EXACTLY the same — do not alter any factual content
+- Do NOT add or remove information
+- The overall quality should still be good academic writing — just human, not AI
+- Output ONLY the rewritten text, nothing else
+
+Text to rewrite:
+"""
+
     def __init__(self):
+        from dotenv import load_dotenv
+        load_dotenv()
+        self._keys = {
+            'openai': os.getenv('OPENAI_API_KEY', ''),
+            'anthropic': os.getenv('ANTHROPIC_API_KEY', ''),
+            'deepseek': os.getenv('DEEPSEEK_API_KEY', ''),
+        }
+        self.available = [k for k, v in self._keys.items() if v]
+
+    def _call_openai(self, prompt: str) -> str:
+        from openai import OpenAI
+        client = OpenAI(api_key=self._keys['openai'])
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+            temperature=0.95,
+        )
+        return resp.choices[0].message.content.strip()
+
+    def _call_anthropic(self, prompt: str) -> str:
+        import anthropic
+        client = anthropic.Anthropic(api_key=self._keys['anthropic'])
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            temperature=0.95,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text.strip()
+
+    def _call_deepseek(self, prompt: str) -> str:
+        from openai import OpenAI
+        client = OpenAI(api_key=self._keys['deepseek'], base_url="https://api.deepseek.com")
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+            temperature=0.95,
+        )
+        return resp.choices[0].message.content.strip()
+
+    def _pick_provider(self, source_model: str) -> str:
+        """Pick rewrite provider via cross-model mapping. Falls back to any available."""
+        preferred = self._CROSS_MODEL.get(source_model)
+        if preferred and preferred in self.available:
+            return preferred
+        # Fallback: pick any available provider that isn't the source
+        source_providers = {'gpt4': 'openai', 'claude': 'anthropic', 'deepseek': 'deepseek'}
+        source_prov = source_providers.get(source_model, '')
+        for p in self.available:
+            if p != source_prov:
+                return p
+        # Last resort: use any available
+        return self.available[0] if self.available else None
+
+    def rewrite(self, text: str, source_model: str = 'unknown') -> str:
+        """Single-pass LLM rewrite. Returns rewritten text or None on failure."""
+        provider = self._pick_provider(source_model)
+        if not provider:
+            return None
+
+        prompt = self._REWRITE_PROMPT + text
+        callers = {
+            'openai': self._call_openai,
+            'anthropic': self._call_anthropic,
+            'deepseek': self._call_deepseek,
+        }
+
+        try:
+            print(f"   🤖 LLM rewrite via {provider}...")
+            result = callers[provider](prompt)
+            if result and len(result) > 50:
+                print(f"   ✅ LLM rewrite done ({len(result)} chars)")
+                return result
+            return None
+        except Exception as e:
+            print(f"   ❌ LLM rewrite failed: {str(e)[:120]}")
+            return None
+
+
+class T5SentenceParaphraser:
+    """Sentence-level paraphrasing using humarin/chatgpt_paraphraser_on_T5_base.
+    Lazy-loads ~500MB model (fp16) on first use. Uses Sentence-BERT for quality filtering."""
+
+    STRATEGY_PARAMS = {
+        # (sentence_ratio, num_beams, temperature)
+        "light":        (0.20, 5, 0.7),
+        "balanced":     (0.30, 5, 0.7),
+        "structural":   (0.25, 5, 0.7),
+        "human-noise":  (0.20, 5, 0.7),
+        "kitchen-sink": (0.40, 5, 0.8),
+    }
+
+    def __init__(self, model_name: str = "humarin/chatgpt_paraphraser_on_T5_base"):
+        self._model_name = model_name
         self._model = None
+        self._tokenizer = None
+        self._device = None
+        self._sbert = None
 
     def _load(self):
         if self._model is None:
-            from parrot import Parrot
-            self._model = Parrot(model_tag="prithivida/parrot_paraphraser_on_T5", use_gpu=False)
-            print("   🦜 Parrot paraphraser loaded")
-        return self._model
+            import torch
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-    def paraphrase(self, text: str, strategy: str = "light") -> Tuple[str, List[Tuple[str, str]]]:
-        """Paraphrase text at the sentence level.
-        Returns (paraphrased_text, list_of_(original_sent, new_sent) pairs)."""
-        model = self._load()
-        ratio = self.STRATEGY_RATIOS.get(strategy, 0.4)
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if self._device == "cuda" else torch.float32
+
+            self._tokenizer = AutoTokenizer.from_pretrained(self._model_name)
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(
+                self._model_name, torch_dtype=dtype
+            ).to(self._device)
+            self._model.eval()
+            print(f"   T5 paraphraser loaded ({self._device})")
+        return self._model, self._tokenizer
+
+    def _load_sbert(self):
+        """Lazy-load Sentence-BERT for quality filtering."""
+        if self._sbert is None:
+            from sentence_transformers import SentenceTransformer
+            self._sbert = SentenceTransformer("all-MiniLM-L6-v2")
+        return self._sbert
+
+    def _sbert_filter(self, original: str, candidates: List[str],
+                      threshold: float = 0.75) -> List[str]:
+        """Filter candidates by Sentence-BERT cosine similarity."""
+        if not candidates:
+            return []
+        sbert = self._load_sbert()
+        texts = [original] + candidates
+        embeddings = sbert.encode(texts)
+        from numpy import dot
+        from numpy.linalg import norm
+        orig_emb = embeddings[0]
+        filtered = []
+        for i, c in enumerate(candidates):
+            cand_emb = embeddings[i + 1]
+            sim = float(dot(orig_emb, cand_emb) / (norm(orig_emb) * norm(cand_emb)))
+            if sim >= threshold:
+                filtered.append(c)
+        return filtered
+
+    def paraphrase_sentence(self, sentence: str, num_beams: int = 5,
+                            temperature: float = 0.7,
+                            num_return: int = 5) -> List[str]:
+        """Generate paraphrase candidates for a single sentence."""
+        model, tokenizer = self._load()
+        import torch
+
+        input_text = f"paraphrase: {sentence}"
+        encoding = tokenizer(
+            input_text, max_length=256, padding="max_length",
+            truncation=True, return_tensors="pt"
+        ).to(self._device)
+
+        with torch.inference_mode():
+            outputs = model.generate(
+                **encoding,
+                max_length=256,
+                num_beams=num_beams,
+                num_return_sequences=min(num_return, num_beams),
+                temperature=temperature,
+                repetition_penalty=1.5,
+                length_penalty=1.0,
+                no_repeat_ngram_size=3,
+                early_stopping=True,
+            )
+
+        candidates = []
+        for output in outputs:
+            decoded = tokenizer.decode(output, skip_special_tokens=True).strip()
+            if decoded and decoded.lower() != sentence.lower():
+                candidates.append(decoded)
+        return candidates
+
+    def paraphrase(self, text: str, strategy: str = "light",
+                   learning_engine=None) -> Tuple[str, List[Tuple[str, str]]]:
+        """Paraphrase text at sentence level per strategy params.
+        Returns (paraphrased_text, [(orig_sent, new_sent), ...])."""
+        params = self.STRATEGY_PARAMS.get(strategy, self.STRATEGY_PARAMS["balanced"])
+        ratio, num_beams, temperature = params
 
         sentences = re.split(r'(?<=[.!?])\s+', text.strip())
         result_sents = []
@@ -219,37 +383,36 @@ class ParrotParaphraser:
 
         for sent in sentences:
             words = sent.split()
-            # Skip very short sentences or apply probabilistically
             if len(words) < 5 or random.random() > ratio:
                 result_sents.append(sent)
                 continue
 
-            try:
-                # max_length must exceed input token count; estimate ~1.5 tokens/word
-                max_len = max(64, int(len(words) * 1.5))
-                paraphrases = model.augment(
-                    input_phrase=sent,
-                    max_length=max_len,
-                    adequacy_threshold=0.55,
-                    fluency_threshold=0.55,
-                    do_diverse=False,
-                    max_return_phrases=10,
-                )
-                if paraphrases:
-                    # paraphrases is a list of (phrase, score) tuples
-                    best = paraphrases[0][0]
-                    # Ensure it ends with proper punctuation
-                    if not best.endswith(('.', '!', '?')):
-                        best = best.rstrip() + '.'
-                    # Capitalize first letter
-                    if best and best[0].islower():
-                        best = best[0].upper() + best[1:]
-                    result_sents.append(best)
-                    changes.append((sent.strip(), best.strip()))
-                else:
-                    result_sents.append(sent)
-            except Exception:
+            candidates = self.paraphrase_sentence(
+                sent, num_beams=num_beams,
+                temperature=temperature, num_return=5
+            )
+
+            # Sentence-BERT quality filter
+            filtered = self._sbert_filter(sent, candidates, threshold=0.80)
+
+            if not filtered:
                 result_sents.append(sent)
+                continue
+
+            # Thompson Sampling selection if learning engine available
+            if learning_engine and hasattr(learning_engine, 'thompson_sample_sentence') and len(filtered) > 1:
+                best = learning_engine.thompson_sample_sentence(sent, filtered)
+            else:
+                best = filtered[0]
+
+            # Normalize punctuation and capitalization
+            if not best.endswith(('.', '!', '?')):
+                best = best.rstrip() + '.'
+            if best and sent and best[0].islower() and sent[0].isupper():
+                best = best[0].upper() + best[1:]
+
+            result_sents.append(best)
+            changes.append((sent.strip(), best.strip()))
 
         return ' '.join(result_sents), changes
 
@@ -407,9 +570,15 @@ class SelfLearningEngine:
         self.user_approvals.append(approval_record)
         self._save_json(self.user_approvals, self.user_approvals_file)
         
-        # Thompson Sampling: update alpha/beta for each synonym pair
-        for orig_word, new_word in changes_made:
-            key = f"{orig_word}->{new_word}"
+        # Thompson Sampling: update alpha/beta for each change pair (word or sentence level)
+        for orig_item, new_item in changes_made:
+            # Sentence-level changes are longer; use hash-based keys
+            if len(orig_item) > 50:
+                orig_hash = hashlib.md5(orig_item.strip().lower().encode()).hexdigest()[:12]
+                cand_hash = hashlib.md5(new_item.strip().lower().encode()).hexdigest()[:12]
+                key = f"s:{orig_hash}->{cand_hash}"
+            else:
+                key = f"{orig_item}->{new_item}"
             if key not in self.synonym_success or not isinstance(self.synonym_success[key], dict):
                 self.synonym_success[key] = {"alpha": 1.0, "beta": 1.0}
             if approved:
@@ -475,6 +644,27 @@ class SelfLearningEngine:
                 rate = float(data) if data else 0.5
                 alpha = max(1.0, rate * 5)
                 beta_val = max(1.0, (1.0 - rate) * 5)
+            sample = random.betavariate(alpha, beta_val)
+            if sample > best_sample:
+                best_sample = sample
+                best_candidate = c
+        return best_candidate
+
+    def thompson_sample_sentence(self, original_sent: str, candidates: List[str]) -> str:
+        """Pick best paraphrase candidate using Thompson Sampling.
+        Keyed on sentence hash pairs for sentence-level tracking."""
+        orig_hash = hashlib.md5(original_sent.strip().lower().encode()).hexdigest()[:12]
+        best_sample = -1.0
+        best_candidate = candidates[0]
+        for c in candidates:
+            cand_hash = hashlib.md5(c.strip().lower().encode()).hexdigest()[:12]
+            key = f"s:{orig_hash}->{cand_hash}"
+            data = self.synonym_success.get(key, {"alpha": 1.0, "beta": 1.0})
+            if isinstance(data, dict):
+                alpha = data.get("alpha", 1.0)
+                beta_val = data.get("beta", 1.0)
+            else:
+                alpha, beta_val = 1.0, 1.0
             sample = random.betavariate(alpha, beta_val)
             if sample > best_sample:
                 best_sample = sample
@@ -758,9 +948,8 @@ class TextQualityAnalyzer:
         self.enable_learning = enable_learning
         self.learning_engine = SelfLearningEngine() if enable_learning else None
         self._sbert_model = None  # Lazy-loaded Sentence-BERT
-        self._bert_swapper = BERTSynonymSwapper()  # BERT MLM for synonym swap
-        self._use_parrot = os.getenv("USE_PARROT", "").lower() in ("true", "1", "yes")
-        self._parrot = ParrotParaphraser() if self._use_parrot else None
+        self._t5 = T5SentenceParaphraser()  # T5 sentence-level paraphraser (fallback)
+        self._llm_rewriter = LLMRewriter()  # Cross-model LLM rewriter
 
         self.connectors = [
             "Furthermore", "Moreover", "However", "Consequently", 
@@ -790,11 +979,14 @@ class TextQualityAnalyzer:
         return self._sbert_model if self._sbert_model is not False else None
 
     def bert_filter_sentences(self, original: str, modified: str,
-                              threshold: float = 0.82) -> Tuple[str, int]:
+                              threshold: float = 0.80) -> Tuple[str, int]:
         """
         Sentence-level BERT filter: revert any sentence where semantic similarity
         drops below threshold. Returns (filtered_text, num_reverted).
         Uses batch encoding for efficiency (~50ms for 7 sentences).
+        When sentence counts differ (from burstiness splits/merges), uses
+        whole-text similarity with a lower threshold (0.70) to avoid reverting
+        all burstiness work.
         """
         model = self._load_sbert()
         if model is None:
@@ -803,12 +995,15 @@ class TextQualityAnalyzer:
         orig_sents = re.split(r'(?<=[.!?])\s+', original.strip())
         mod_sents = re.split(r'(?<=[.!?])\s+', modified.strip())
 
-        # If sentence count changed (splits/merges), check overall similarity only
+        # If sentence count changed (splits/merges from burstiness), use whole-text
+        # similarity with a lower bar — we expect structural changes here
         if len(orig_sents) != len(mod_sents):
             embeddings = model.encode([original, modified])
             from sklearn.metrics.pairwise import cosine_similarity as cos_sim
             sim = cos_sim([embeddings[0]], [embeddings[1]])[0][0]
-            if sim >= threshold:
+            # Lower threshold (0.70) when sentence count differs — burstiness
+            # splits/merges are intentional structural changes, not drift
+            if sim >= 0.70:
                 return modified, 0
             return original, len(mod_sents)
 
@@ -836,122 +1031,322 @@ class TextQualityAnalyzer:
 
         return ' '.join(result_sents), reverted
 
-    def _build_context_sentence(self, tokens: List[str], target_index: int,
-                                window: int = 40) -> str:
-        """Build windowed context with [MASK] at target position for BERT."""
-        start = max(0, target_index - window)
-        end = min(len(tokens), target_index + window)
-        ctx = list(tokens[start:end])
-        ctx[target_index - start] = "[MASK]"
-        return ' '.join(ctx)
+    def _wordnet_synonyms(self, word: str, penn_tag: str) -> List[str]:
+        """Get WordNet synonyms for a word — first synset only (most common sense)."""
+        from nltk.corpus import wordnet as wn
+        upos = _penn_to_upos(penn_tag)
+        wn_pos_map = {'ADJ': wn.ADJ, 'VERB': wn.VERB, 'NOUN': wn.NOUN, 'ADV': wn.ADV}
+        wn_pos = wn_pos_map.get(upos)
 
-    def intelligent_synonym_replace(self, text: str, max_ratio: float = 0.3,
-                                   domain: str = 'general') -> Tuple[str, List[Tuple[str, str]]]:
-        """
-        BERT MLM-powered synonym replacement.
-        Priority: learned synonyms (Thompson) → BERT MLM → static dictionary.
-        max_ratio: maximum fraction of words to change
-        Returns: (transformed_text, list_of_changes)
-        """
-        # Static synonyms as last-resort fallback
-        if self.learning_engine:
+        synonyms = set()
+        synsets = wn.synsets(word, pos=wn_pos) if wn_pos else wn.synsets(word)
+        if synsets:
+            # Only use first synset (most common sense) to avoid wrong-sense synonyms
+            for lemma in synsets[0].lemmas():
+                name = lemma.name().replace('_', ' ')
+                if name.lower() != word.lower() and ' ' not in name and len(name) > 2:
+                    synonyms.add(name.lower())
+        return list(synonyms)[:4]
+
+    # Curated AI-telltale replacements: words AI overuses → human alternatives
+    _AI_TELLTALE_SWAPS = {
+        # ── Formal verbs → simpler human alternatives ─────────────────────
+        'utilize': ['use', 'employ'], 'utilizes': ['uses', 'employs'],
+        'utilized': ['used', 'employed'], 'utilizing': ['using', 'employing'],
+        'demonstrate': ['show', 'reveal'], 'demonstrates': ['shows', 'reveals'],
+        'demonstrated': ['showed', 'revealed'], 'demonstrating': ['showing'],
+        'facilitate': ['help', 'enable', 'ease'], 'facilitates': ['helps', 'enables'],
+        'facilitated': ['helped', 'enabled'], 'facilitating': ['helping', 'enabling'],
+        'necessitate': ['need', 'require'], 'necessitates': ['needs', 'requires', 'calls for'],
+        'necessitated': ['needed', 'required'], 'necessitating': ['needing', 'requiring'],
+        'encompass': ['cover', 'include'], 'encompasses': ['covers', 'includes'],
+        'encompassed': ['covered', 'included'], 'encompassing': ['covering', 'including'],
+        'constitute': ['make up', 'form'], 'constitutes': ['makes up', 'forms'],
+        'possess': ['have', 'hold', 'carry'], 'possesses': ['has', 'holds'],
+        'underscore': ['highlight', 'stress'], 'underscores': ['highlights', 'stresses'],
+        'delineate': ['outline', 'describe'], 'elucidate': ['clarify', 'explain'],
+        'enhance': ['improve', 'boost', 'strengthen'], 'enhances': ['improves', 'boosts'],
+        'enhancing': ['improving', 'boosting'], 'enhanced': ['improved', 'boosted'],
+        'optimize': ['improve', 'tune', 'refine'], 'optimizing': ['improving', 'tuning'],
+        'leverage': ['use', 'draw on', 'tap into'], 'leveraging': ['using', 'drawing on'],
+        'leveraged': ['used', 'drew on'], 'leverages': ['uses', 'draws on'],
+        'mitigate': ['reduce', 'lessen', 'ease'], 'mitigating': ['reducing', 'easing'],
+        'mitigated': ['reduced', 'lessened'], 'mitigates': ['reduces', 'lessens'],
+        'exacerbate': ['worsen', 'intensify'], 'exacerbating': ['worsening'],
+        'exacerbated': ['worsened', 'intensified'],
+        'exhibit': ['show', 'display'], 'exhibits': ['shows', 'displays'],
+        'commence': ['start', 'begin'], 'commences': ['starts', 'begins'],
+        'commenced': ['started', 'began'],
+        'endeavor': ['try', 'attempt', 'effort'], 'endeavors': ['tries', 'attempts'],
+        'ascertain': ['find out', 'figure out'], 'ascertained': ['found out'],
+        'substantiate': ['back up', 'support', 'confirm'],
+        'proliferate': ['spread', 'grow', 'multiply'],
+        'proliferating': ['spreading', 'growing'],
+        'perpetuate': ['continue', 'keep going'], 'perpetuated': ['continued', 'kept going'],
+        'juxtapose': ['compare', 'contrast'], 'juxtaposed': ['compared', 'placed side by side'],
+        'augment': ['add to', 'increase', 'boost'], 'augmented': ['increased', 'boosted'],
+        'denote': ['mean', 'refer to', 'stand for'], 'denotes': ['means', 'refers to'],
+        'foster': ['encourage', 'support', 'promote'], 'fostering': ['encouraging', 'supporting'],
+        'fosters': ['encourages', 'promotes'],
+        'garner': ['gain', 'earn', 'get'], 'garnered': ['gained', 'earned'],
+        'illuminate': ['shed light on', 'clarify'], 'illuminates': ['sheds light on'],
+
+        # ── Formal adjectives/adverbs → simpler ──────────────────────────
+        'significant': ['major', 'big', 'notable'], 'significantly': ['greatly', 'a lot'],
+        'comprehensive': ['thorough', 'broad', 'wide'],
+        'crucial': ['key', 'vital', 'major'], 'essential': ['needed', 'core', 'key'],
+        'numerous': ['many', 'several', 'plenty of'],
+        'primarily': ['mainly', 'mostly'], 'predominantly': ['mostly', 'largely'],
+        'approximately': ['about', 'roughly', 'around'],
+        'particularly': ['especially', 'notably'],
+        'specifically': ['namely', 'in particular'],
+        'inherently': ['naturally', 'by nature'],
+        'increasingly': ['more and more', 'ever more'],
+        'imperative': ['vital', 'urgent', 'pressing'],
+        'multifaceted': ['complex', 'varied'], 'multidisciplinary': ['cross-field', 'varied'],
+        'paradigm': ['model', 'framework'], 'robust': ['strong', 'solid', 'sturdy'],
+        'pivotal': ['key', 'central', 'critical'], 'intricate': ['complex', 'detailed'],
+        'enigmatic': ['mysterious', 'puzzling'], 'invaluable': ['priceless', 'precious'],
+        'inadequate': ['lacking', 'poor', 'weak'],
+        'remarkable': ['striking', 'notable'], 'notable': ['important', 'major'],
+        'contingent': ['dependent', 'based'], 'requisite': ['needed', 'required'],
+        'characterized': ['marked', 'defined', 'known for'],
+        'comprising': ['including', 'made up of'],
+        'paramount': ['top', 'most important', 'key'],
+        'pertinent': ['relevant', 'related'], 'prevalent': ['common', 'widespread'],
+        'profound': ['deep', 'strong', 'serious'], 'profoundly': ['deeply', 'greatly'],
+        'substantial': ['large', 'big', 'major'], 'substantially': ['a lot', 'greatly'],
+        'detrimental': ['harmful', 'damaging', 'bad'],
+        'conducive': ['helpful', 'good for'], 'ubiquitous': ['everywhere', 'common'],
+        'indispensable': ['vital', 'must-have'], 'overarching': ['main', 'broad'],
+        'unprecedented': ['never before seen', 'first-ever'],
+        'burgeoning': ['growing', 'booming'], 'seminal': ['landmark', 'groundbreaking'],
+        'holistic': ['whole', 'complete', 'overall'],
+        'myriad': ['many', 'countless'], 'plethora': ['lots of', 'a ton of', 'many'],
+        'aforementioned': ['mentioned', 'noted above'],
+        'concomitant': ['accompanying', 'related'], 'efficacious': ['effective', 'useful'],
+
+        # ── Formal connectors → casual ───────────────────────────────────
+        'subsequently': ['then', 'later', 'after that'],
+        'therefore': ['so', 'thus'], 'thereby': ['by doing so', 'this way'],
+        'however': ['but', 'still', 'yet'], 'moreover': ['also', 'plus', 'and'],
+        'furthermore': ['also', 'besides', 'what is more'],
+        'nevertheless': ['still', 'even so', 'yet'],
+        'consequently': ['so', 'as a result'],
+        'additionally': ['also', 'on top of that'],
+        'notwithstanding': ['despite', 'even though'],
+        'henceforth': ['from now on', 'going forward'],
+        'wherein': ['where', 'in which'],
+        'whereby': ['by which', 'through which'],
+        'whilst': ['while', 'as'],
+        'regarding': ['about', 'on'],
+
+        # ── Formal nouns → simpler ───────────────────────────────────────
+        'establishment': ['creation', 'setup'], 'preservation': ['protection', 'upkeep'],
+        'integration': ['combining', 'blending'], 'implementation': ['carrying out', 'rollout'],
+        'collaboration': ['teamwork', 'cooperation'], 'formulation': ['creation', 'design'],
+        'advancement': ['progress', 'growth'], 'dynamics': ['workings', 'interactions'],
+        'vulnerability': ['weakness', 'exposure'], 'disturbances': ['disruptions', 'upsets'],
+        'constraints': ['limits', 'restrictions'],
+        'informing': ['guiding', 'shaping'], 'ensuring': ['making sure', 'guaranteeing'],
+        'addressing': ['tackling', 'dealing with'], 'harnessing': ['tapping', 'using'],
+        'ramifications': ['effects', 'consequences'], 'implications': ['effects', 'results'],
+        'methodology': ['method', 'approach'], 'methodologies': ['methods', 'approaches'],
+        'mechanisms': ['ways', 'processes'], 'mechanism': ['way', 'process'],
+        'phenomenon': ['event', 'thing'], 'phenomena': ['events', 'things'],
+        'manifestation': ['sign', 'expression'], 'manifestations': ['signs', 'expressions'],
+        'trajectory': ['path', 'direction', 'trend'],
+        'trajectories': ['paths', 'directions', 'trends'],
+        'discourse': ['discussion', 'debate', 'talk'],
+        'dichotomy': ['split', 'divide', 'contrast'],
+        'heterogeneity': ['variety', 'diversity', 'mix'],
+        'juxtaposition': ['contrast', 'comparison'],
+        'underpinning': ['basis', 'foundation'], 'underpinnings': ['foundations', 'bases'],
+        'stakeholders': ['people involved', 'parties'],
+        'synergies': ['combined effects', 'benefits'],
+        'framework': ['structure', 'setup', 'system'],
+        'frameworks': ['structures', 'systems'],
+    }
+
+    # Phrase-level AI-telltale replacements (applied before word-level)
+    _AI_TELLTALE_PHRASES = {
+        'in order to': 'to',
+        'a wide range of': 'many different',
+        'a vast array of': 'many different',
+        'a myriad of': 'many',
+        'plays a crucial role': 'matters a lot',
+        'plays a vital role': 'is really important',
+        'plays a significant role': 'matters a lot',
+        'plays an important role': 'matters',
+        'it is worth noting that': 'notably,',
+        'it is important to note that': 'keep in mind,',
+        'it should be noted that': 'note that',
+        'in the context of': 'when it comes to',
+        'with respect to': 'about',
+        'in light of': 'given',
+        'on the other hand': 'then again',
+        'as a consequence': 'because of this',
+        'in conjunction with': 'along with',
+        'for the purpose of': 'to',
+        'in the realm of': 'in',
+        'serves as a': 'is a',
+        'serves as an': 'is an',
+        'has the potential to': 'could',
+        'it is essential to': 'we need to',
+        'it is crucial to': 'we must',
+        'a growing body of': 'more and more',
+        'the overarching goal': 'the main goal',
+        'from a broader perspective': 'looking at the big picture',
+        'of paramount importance': 'very important',
+        'is characterized by': 'is known for',
+        'in contemporary society': 'today',
+        'prior to': 'before',
+    }
+
+    def _word_semantic_ok(self, original_word: str, candidate: str,
+                          threshold: float = 0.70) -> bool:
+        """Word-level semantic check using Sentence-BERT.
+        Embeds both words in a short context and compares cosine similarity.
+        Catches 'future' → 'economic' type errors that sentence-level filter misses."""
+        model = self._load_sbert()
+        if model is None:
+            return True  # can't check, allow
+        ctx_orig = f"The {original_word} is important"
+        ctx_cand = f"The {candidate} is important"
+        embs = model.encode([ctx_orig, ctx_cand])
+        from numpy import dot
+        from numpy.linalg import norm
+        sim = float(dot(embs[0], embs[1]) / (norm(embs[0]) * norm(embs[1])))
+        return sim >= threshold
+
+    def safe_synonym_replace(self, text: str, max_ratio: float = 0.25,
+                            domain: str = 'general',
+                            original_text: str = None,
+                            use_learned_synonyms: bool = False) -> Tuple[str, List[Tuple[str, str]]]:
+        """Targeted word replacement focusing on AI-telltale vocabulary.
+        Uses curated safe swaps + static base synonyms only (no learned data by default).
+        Protects domain-critical terms. Word-level SBERT guard rejects bad synonyms."""
+
+        result = text
+        changes_made = []
+
+        # Phase A: Multi-word phrase replacements (highest impact, always safe)
+        for phrase, replacement in self._AI_TELLTALE_PHRASES.items():
+            if phrase in result.lower():
+                pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+                def _phrase_replace(m):
+                    orig = m.group(0)
+                    if orig[0].isupper():
+                        return replacement[0].upper() + replacement[1:]
+                    return replacement
+                new_result = pattern.sub(_phrase_replace, result, count=1)
+                if new_result != result:
+                    result = new_result
+                    changes_made.append((phrase, replacement))
+
+        # Phase B: Single-word AI-telltale replacements (curated, always safe)
+        # Skip matches inside parentheses or em-dash asides (injected content)
+        def _outside_paren(m):
+            """Return True if match position is NOT inside (...) or — ... —."""
+            s = m.start()
+            prefix = result[:s]
+            # Check parentheses
+            if prefix.count('(') > prefix.count(')'):
+                return False
+            # Check em-dashes: odd count of — before match means inside aside
+            if prefix.count('—') % 2 == 1:
+                return False
+            return True
+
+        for ai_word, human_alts in self._AI_TELLTALE_SWAPS.items():
+            if ai_word in result.lower():
+                replacement = random.choice(human_alts)
+                pattern = re.compile(re.escape(ai_word), re.IGNORECASE)
+                matches = [m for m in pattern.finditer(result) if _outside_paren(m)]
+                if matches:
+                    m = matches[0]  # replace first outside-paren match only
+                    orig = m.group(0)
+                    if orig[0].isupper():
+                        repl = replacement[0].upper() + replacement[1:]
+                    else:
+                        repl = replacement
+                    result = result[:m.start()] + repl + result[m.end():]
+                    changes_made.append((ai_word, replacement))
+
+        # Static base synonyms only — no learned/domain synonyms unless explicitly enabled
+        if use_learned_synonyms and self.learning_engine:
             static_syns = self.learning_engine.get_domain_synonyms(domain)
         else:
-            static_syns = self._load_static_synonyms()
+            static_syns = self.learning_engine._get_base_synonyms() if self.learning_engine else self._load_static_synonyms()
 
-        # POS-tag the entire text for context-aware replacement
-        tokens = nltk.word_tokenize(text)
+        ref = original_text if original_text else text
+        ref_words = [re.sub(r'[^\w]', '', w.lower()) for w in ref.split() if len(w) > 3]
+        word_freq = Counter(ref_words)
+        protected = frozenset(w for w, c in word_freq.items() if c >= 2)
+        if self.learning_engine and domain in self.learning_engine.domain_keywords:
+            protected = protected | frozenset(self.learning_engine.domain_keywords[domain])
+        # Also protect words already in AI telltale dict (already handled above)
+        protected = protected | frozenset(self._AI_TELLTALE_SWAPS.keys())
+
+        tokens = nltk.word_tokenize(result)
         tagged = nltk.pos_tag(tokens)
-
-        max_changes = int(len(tokens) * max_ratio)
+        max_changes = max(2, int(len(tokens) * max_ratio * 0.5))
         result_tokens = list(tokens)
 
-        # Identify eligible word positions
         eligible = []
         for i, (word, penn_tag) in enumerate(tagged):
             clean = re.sub(r'[^\w]', '', word.lower())
-            if (len(clean) < 4
+            if (len(clean) < 5
                     or clean in _STOPWORDS
                     or clean in _AMBIGUOUS_WORDS
+                    or clean in protected
                     or penn_tag in ('NNP', 'NNPS')
                     or not clean.isalpha()):
                 continue
             eligible.append(i)
 
-        # Probabilistic selection: shuffle and take up to 2x max_changes
         random.shuffle(eligible)
-        candidates_to_try = eligible[:max_changes * 2]
-
         changed = 0
-        changes_made = []
-
-        for i in candidates_to_try:
+        for i in eligible[:max_changes * 2]:
             if changed >= max_changes:
                 break
-
             word, penn_tag = tagged[i]
             clean = re.sub(r'[^\w]', '', word.lower())
             upos = _penn_to_upos(penn_tag)
             synonym = None
 
-            # ── Try 1: Learned synonyms (Thompson sampling) ───────────
-            if self.learning_engine and upos:
-                lemma_result = getLemma(word, upos=upos)
-                lemma = lemma_result[0] if lemma_result else clean
-                learned = self.learning_engine.get_intelligent_replacement_candidates(lemma, domain)
-                if learned:
-                    candidate = self.learning_engine.thompson_sample(lemma, learned)
-                    inflected = getInflection(candidate, tag=penn_tag)
-                    if inflected and inflected[0].lower() != word.lower():
-                        if inflected[0].lower() not in _spell.unknown([inflected[0].lower()]):
-                            synonym = inflected[0]
-
-            # ── Try 2: BERT MLM prediction ────────────────────────────
-            if not synonym:
-                context = self._build_context_sentence(result_tokens, i)
-                bert_candidates = self._bert_swapper.get_replacements(
-                    context, clean, penn_tag
-                )
-                if bert_candidates:
-                    if self.learning_engine:
-                        lemma_result = getLemma(word, upos=upos) if upos else (clean,)
-                        lemma = lemma_result[0] if lemma_result else clean
-                        synonym = self.learning_engine.thompson_sample(lemma, bert_candidates)
-                    else:
-                        synonym = bert_candidates[0]
-
-            # ── Try 3: Static dictionary fallback ─────────────────────
-            if not synonym and clean in static_syns:
+            # Static dictionary only (no WordNet for remaining words)
+            if clean in static_syns:
                 fallback = static_syns[clean]
                 if fallback:
-                    synonym = random.choice(fallback)
+                    candidate = random.choice(fallback)
+                    if upos:
+                        inflected = getInflection(candidate, tag=penn_tag)
+                        if inflected and inflected[0].lower() != word.lower():
+                            candidate = inflected[0]
+                    if candidate.lower() != word.lower():
+                        if candidate.lower() not in _spell.unknown([candidate.lower()]):
+                            # Word-level semantic guard
+                            if self._word_semantic_ok(clean, candidate.lower()):
+                                synonym = candidate
 
-            # ── Spell-check validation ────────────────────────────────
-            if synonym and synonym.lower() in _spell.unknown([synonym.lower()]):
-                synonym = None
-
-            # ── Apply replacement ─────────────────────────────────────
             if synonym:
-                synonym = BERTSynonymSwapper._restore_capitalization(word, synonym)
-
-                # Preserve trailing punctuation
+                if word[0].isupper() and synonym[0].islower():
+                    synonym = synonym[0].upper() + synonym[1:]
                 trailing = ''
                 for ch in reversed(word):
                     if not ch.isalpha():
                         trailing = ch + trailing
                     else:
                         break
-
                 result_tokens[i] = synonym + trailing
                 changed += 1
                 changes_made.append((clean, synonym.lower()))
 
-        # Reconstruct text preserving original whitespace pattern
-        reconstructed = _reconstruct_text(text, tokens, result_tokens)
-        # Post-processing: fix a/an article mismatches
+        reconstructed = _reconstruct_text(result, tokens, result_tokens)
         reconstructed = _fix_articles(reconstructed)
         return reconstructed, changes_made
-    
+
     def advanced_restructure(self, text: str, aggressiveness: float = 0.3) -> str:
         """
         Advanced sentence structure variation with multiple transforms:
@@ -1154,7 +1549,14 @@ class TextQualityAnalyzer:
                 result.append(sent)
                 continue
 
-            if random.random() < 0.3:
+            # Skip if sentence already starts with a connector/filler
+            _starts_with_connector = any(
+                sent.lower().startswith(c.lower())
+                for c in ['also', 'but', 'however', 'on top of', 'that said',
+                           'plus', 'still', 'yet', 'in practical', 'interestingly',
+                           'broadly', 'to some extent', 'this', 'these', 'those']
+            )
+            if random.random() < 0.3 and not _starts_with_connector:
                 choice = random.random()
                 if choice < 0.6:
                     # Prepend a filler phrase
@@ -1380,73 +1782,696 @@ class TextQualityAnalyzer:
             'domain': self.current_domain
         }
     
-    def generate_variants(self, text: str) -> List[Tuple[str, Dict, str, List[Tuple[str, str]]]]:
+    def generate_llm_variant(self, text: str, source_model: str = 'unknown') -> tuple:
+        """Single-pass LLM rewrite via cross-model API.
+        Returns (rewritten_text, changes_list) or None if unavailable/failed."""
+        if not self._llm_rewriter.available:
+            return None
+
+        rewritten = self._llm_rewriter.rewrite(text, source_model=source_model)
+        if not rewritten:
+            return None
+
+        # Sanity check: rewritten text should be reasonable length
+        ratio = len(rewritten) / len(text) if text else 0
+        if ratio < 0.5 or ratio > 2.0:
+            print(f"   ⚠️  LLM rewrite length ratio {ratio:.2f} — rejected")
+            return None
+
+        # Build a changes list (whole-text level)
+        changes = [("llm_rewrite", f"via {self._llm_rewriter._pick_provider(source_model)}")]
+        return rewritten, changes
+
+    # ── Perplexity injection methods ─────────────────────────────────────
+    def rare_synonym_replace(self, text: str, max_ratio: float = 0.15,
+                             original_text: str = None) -> Tuple[str, List[Tuple[str, str]]]:
+        """Replace content words with less common (higher perplexity) synonyms.
+        Picks from the bottom 30% of WordNet synonyms by word frequency."""
+        from wordfreq import word_frequency
+        from nltk.corpus import wordnet as wn
+
+        ref = original_text if original_text else text
+        ref_words = [re.sub(r'[^\w]', '', w.lower()) for w in ref.split() if len(w) > 3]
+        word_freq = Counter(ref_words)
+        protected = frozenset(w for w, c in word_freq.items() if c >= 2)
+        if self.learning_engine and self.current_domain in self.learning_engine.domain_keywords:
+            protected = protected | frozenset(
+                self.learning_engine.domain_keywords[self.current_domain])
+
+        tokens = nltk.word_tokenize(text)
+        tagged = nltk.pos_tag(tokens)
+        max_changes = max(2, int(len(tokens) * max_ratio))
+        result_tokens = list(tokens)
+        changes = []
+
+        # Mark tokens inside parentheses or em-dash asides as off-limits
+        in_paren = False
+        in_dash = False
+        shielded = set()
+        for i, (word, _) in enumerate(tagged):
+            if word == '(' or word == '(':
+                in_paren = True
+            if word == '—' and not in_dash:
+                in_dash = True
+                shielded.add(i)
+                continue
+            elif word == '—' and in_dash:
+                in_dash = False
+                shielded.add(i)
+                continue
+            if in_paren or in_dash:
+                shielded.add(i)
+            if word == ')' or word == ')':
+                in_paren = False
+
+        eligible = []
+        for i, (word, penn_tag) in enumerate(tagged):
+            clean = re.sub(r'[^\w]', '', word.lower())
+            if (len(clean) < 4
+                    or clean in _STOPWORDS or clean in _AMBIGUOUS_WORDS
+                    or clean in protected
+                    or penn_tag in ('NNP', 'NNPS')
+                    or not clean.isalpha()
+                    or not penn_tag[0] in ('N', 'V', 'J', 'R')
+                    or i in shielded):
+                continue
+            eligible.append(i)
+
+        random.shuffle(eligible)
+        changed = 0
+        for i in eligible:
+            if changed >= max_changes:
+                break
+            word, penn_tag = tagged[i]
+            clean = re.sub(r'[^\w]', '', word.lower())
+            upos = _penn_to_upos(penn_tag)
+
+            # Get WordNet synonyms
+            wn_pos_map = {'ADJ': wn.ADJ, 'VERB': wn.VERB, 'NOUN': wn.NOUN, 'ADV': wn.ADV}
+            wn_pos = wn_pos_map.get(upos)
+            synsets = wn.synsets(clean, pos=wn_pos) if wn_pos else wn.synsets(clean)
+            candidates = set()
+            for ss in synsets[:3]:  # first 3 synsets (common senses)
+                for lemma in ss.lemmas():
+                    name = lemma.name().replace('_', ' ')
+                    if (name.lower() != clean
+                            and ' ' not in name
+                            and len(name) > 2
+                            and name.lower() not in _STOPWORDS
+                            and name.lower() not in _AMBIGUOUS_WORDS):
+                        candidates.add(name.lower())
+
+            if not candidates:
+                continue
+
+            # Score by frequency — pick from bottom 30% (less common = higher perplexity)
+            scored = [(c, word_frequency(c, 'en')) for c in candidates]
+            scored.sort(key=lambda x: x[1])
+            cutoff = max(1, int(len(scored) * 0.3))
+            rare_pool = scored[:cutoff]
+
+            # Try each rare candidate (least common first)
+            synonym = None
+            for cand, freq in rare_pool:
+                # Reject extremely rare words (freq < 1e-8) — they sound unnatural
+                if freq < 1e-8:
+                    continue
+                # Spell check base form
+                if cand in _spell.unknown([cand]):
+                    continue
+                # POS inflect
+                inflected = cand
+                if upos:
+                    infl = getInflection(cand, tag=penn_tag)
+                    if infl and infl[0].lower() != word.lower():
+                        inflected = infl[0]
+                if inflected.lower() == word.lower():
+                    continue
+                # Spell check inflected form too
+                if inflected.lower() in _spell.unknown([inflected.lower()]):
+                    continue
+                # Word-level semantic guard
+                if self._word_semantic_ok(clean, inflected.lower()):
+                    synonym = inflected
+                    break
+
+            if synonym:
+                if word[0].isupper() and synonym[0].islower():
+                    synonym = synonym[0].upper() + synonym[1:]
+                trailing = ''
+                for ch in reversed(word):
+                    if not ch.isalpha():
+                        trailing = ch + trailing
+                    else:
+                        break
+                result_tokens[i] = synonym + trailing
+                changed += 1
+                changes.append((clean, synonym.lower()))
+
+        reconstructed = _reconstruct_text(text, tokens, result_tokens)
+        reconstructed = _fix_articles(reconstructed)
+        return reconstructed, changes
+
+    def inject_parentheticals(self, text: str, count: int = 2) -> str:
+        """Insert parenthetical asides at existing comma positions to break
+        token predictability without corrupting grammar."""
+        asides = [
+            "which is often overlooked",
+            "though this varies by region",
+            "as several studies suggest",
+            "arguably the most critical factor",
+            "a point often debated",
+            "despite some disagreement",
+            "though evidence varies",
+            "which complicates things further",
+            "not without controversy",
+            "though not everyone agrees",
+            "still poorly understood",
+            "a growing concern",
+        ]
+
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) < 4:
+            return text
+
+        # Track asides already in text to prevent duplicates across iterations
+        text_lower = text.lower()
+        available_asides = [a for a in asides if a.lower() not in text_lower]
+        if not available_asides:
+            return text
+
+        added = 0
+        result = []
+        for i, sent in enumerate(sentences):
+            if (added >= count
+                    or i == 0 or i >= len(sentences) - 1
+                    or len(sent.split()) < 15
+                    or '—' in sent or '(' in sent):
+                result.append(sent)
+                continue
+
+            # Only insert at an existing comma position (safe grammatical boundary)
+            commas = [m.start() for m in re.finditer(r',', sent)]
+            valid_commas = [p for p in commas if 15 < p < len(sent) - 20]
+
+            if valid_commas and random.random() < 0.4 and available_asides:
+                pos = random.choice(valid_commas)
+                aside = available_asides.pop(random.randrange(len(available_asides)))
+                style = random.choice(['dash', 'paren', 'comma'])
+                if style == 'dash':
+                    new_sent = sent[:pos] + f" — {aside} —" + sent[pos:]
+                elif style == 'paren':
+                    new_sent = sent[:pos] + f" ({aside})" + sent[pos:]
+                else:
+                    new_sent = sent[:pos] + f", {aside}," + sent[pos + 1:]
+                result.append(new_sent)
+                added += 1
+            else:
+                result.append(sent)
+
+        return ' '.join(result)
+
+    def inject_rhetorical_questions(self, text: str, count: int = 1) -> str:
+        """Insert a standalone rhetorical question BEFORE a declarative sentence."""
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) < 5:
+            return text
+
+        # Pre-built rhetorical questions keyed by topic cue words
+        topic_questions = [
+            (r'\bthreat|damage|harm|destroy|disrupt', [
+                "But why should we care?",
+                "So what's really at stake here?",
+            ]),
+            (r'\bconserv|protect|preserv|sustain', [
+                "But can we actually fix this?",
+                "So what do we do about it?",
+            ]),
+            (r'\bresearch|study|science|understand', [
+                "And how do we even begin to tackle this?",
+                "So where does that leave us?",
+            ]),
+            (r'\bchalleng|difficult|problem|issue|crisis', [
+                "But is it really that simple?",
+                "So what's the catch?",
+            ]),
+        ]
+        # Fallback generic questions
+        generic_questions = [
+            "But why does this matter?",
+            "So what's the takeaway?",
+            "And here's the thing.",
+        ]
+
+        inserted = 0
+        result = []
+        for i, sent in enumerate(sentences):
+            # Only target middle sentences, skip first 2 and last 2
+            if inserted < count and 2 <= i < len(sentences) - 2:
+                words = sent.split()
+                if len(words) >= 10 and '?' not in sent and random.random() < 0.3:
+                    # Pick a topic-matched question or generic
+                    question = None
+                    for pattern, qs in topic_questions:
+                        if re.search(pattern, sent, re.IGNORECASE):
+                            question = random.choice(qs)
+                            break
+                    if question is None:
+                        question = random.choice(generic_questions)
+                    result.append(question)
+                    inserted += 1
+            result.append(sent)
+
+        return ' '.join(result)
+
+    def vary_sentence_rhythm(self, text: str) -> str:
+        """Break uniform sentence length pattern — merge short sentences only."""
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) < 5:
+            return text
+
+        result = []
+        merged_next = False
+        for i, sent in enumerate(sentences):
+            if merged_next:
+                merged_next = False
+                continue
+
+            words = sent.split()
+
+            # Merge two consecutive short sentences (< 10 words each)
+            if (len(words) < 10
+                    and i < len(sentences) - 1
+                    and len(sentences[i + 1].split()) < 10
+                    and random.random() < 0.35):
+                next_sent = sentences[i + 1]
+                connector = random.choice([' — ', '; '])
+                combined = sent.rstrip('.') + connector + next_sent[0].lower() + next_sent[1:]
+                result.append(combined)
+                merged_next = True
+                continue
+
+            result.append(sent)
+
+        return ' '.join(result)
+
+    def inject_discourse_markers(self, text: str, count: int = 3) -> str:
+        """Add informal discourse markers that increase perplexity."""
+        starters = [
+            "Granted,", "Admittedly,", "To be fair,", "In a way,",
+            "Realistically,", "Interestingly enough,", "The thing is,",
+            "Look,", "Honestly,", "That said,",
+        ]
+        mid_markers = [
+            "in a sense", "if you think about it", "strictly speaking",
+            "for better or worse", "at least in theory",
+        ]
+
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) < 4:
+            return text
+
+        added = 0
+        result = []
+        # Track starters/markers already in text to prevent duplicates across iterations
+        text_lower = text.lower()
+        used_starters = {s for s in starters if s.lower().rstrip(',') in text_lower}
+        used_mid = {m for m in mid_markers if m.lower() in text_lower}
+
+        for i, sent in enumerate(sentences):
+            if added >= count or i == 0 or i >= len(sentences) - 1:
+                result.append(sent)
+                continue
+
+            # Skip if sentence already starts with a discourse marker or connector
+            first_word = sent.split()[0].lower().rstrip(',') if sent.split() else ''
+            if first_word in ('but', 'so', 'also', 'and', 'still', 'yet', 'granted',
+                              'admittedly', 'honestly', 'look', 'realistically',
+                              'to', 'in', 'the', 'interestingly', 'that'):
+                result.append(sent)
+                continue
+
+            if random.random() < 0.35:
+                if random.random() < 0.6:
+                    # Sentence starter
+                    available = [s for s in starters if s not in used_starters]
+                    if available:
+                        marker = random.choice(available)
+                        used_starters.add(marker)
+                        sent = f"{marker} {sent[0].lower()}{sent[1:]}"
+                        added += 1
+                else:
+                    # Mid-sentence marker after first clause
+                    available_mid = [m for m in mid_markers if m not in used_mid]
+                    if not available_mid:
+                        result.append(sent)
+                        continue
+                    comma_pos = sent.find(',')
+                    if 8 < comma_pos < len(sent) - 15:
+                        marker = random.choice(available_mid)
+                        used_mid.add(marker)
+                        sent = sent[:comma_pos + 1] + f" {marker}," + sent[comma_pos + 1:]
+                        added += 1
+                result.append(sent)
+            else:
+                result.append(sent)
+
+        return ' '.join(result)
+
+    # ── Classifier-bypass methods ─────────────────────────────────────────
+
+    _CONTRACTION_MAP = [
+        # Ordered longest-first to prevent partial matches
+        ("would not", "wouldn't"), ("should not", "shouldn't"),
+        ("could not", "couldn't"), ("does not", "doesn't"),
+        ("did not", "didn't"), ("has not", "hasn't"),
+        ("have not", "haven't"), ("had not", "hadn't"),
+        ("will not", "won't"), ("do not", "don't"),
+        ("is not", "isn't"), ("are not", "aren't"),
+        ("was not", "wasn't"), ("were not", "weren't"),
+        ("cannot", "can't"), ("can not", "can't"),
+        ("they are", "they're"), ("they have", "they've"),
+        ("there is", "there's"), ("that is", "that's"),
+        ("it is", "it's"), ("we are", "we're"),
+        ("we have", "we've"), ("who is", "who's"),
+        ("what is", "what's"), ("let us", "let's"),
+    ]
+
+    def inject_contractions(self, text: str) -> str:
+        """Replace formal constructions with contractions.
+        Classifier-based detectors flag absence of contractions as AI signal.
+        Applies to ~70% of matches; skips content inside quotes or parentheses."""
+        result = text
+        applied = 0
+
+        for formal, contraction in self._CONTRACTION_MAP:
+            # Case-insensitive search, but skip inside quotes or parenthetical asides
+            pattern = re.compile(re.escape(formal), re.IGNORECASE)
+            matches = list(pattern.finditer(result))
+            if not matches:
+                continue
+
+            # Process matches in reverse order to preserve positions
+            for m in reversed(matches):
+                # Skip ~30% of matches to keep some formal constructions
+                if random.random() < 0.30:
+                    continue
+
+                # Skip if inside quotes
+                prefix = result[:m.start()]
+                if prefix.count('"') % 2 == 1:
+                    continue
+                # Skip if inside parentheses or em-dash asides
+                if prefix.count('(') > prefix.count(')'):
+                    continue
+                if prefix.count('\u2014') % 2 == 1:  # em-dash
+                    continue
+
+                orig = m.group(0)
+                # Preserve case of first character
+                if orig[0].isupper():
+                    repl = contraction[0].upper() + contraction[1:]
+                else:
+                    repl = contraction
+                result = result[:m.start()] + repl + result[m.end():]
+                applied += 1
+
+        return result
+
+    def inject_burstiness(self, text: str) -> str:
+        """Increase sentence length variance (burstiness) to fool classifier-based detectors.
+        Human text has stdev > 8 words; AI text typically has stdev < 4.
+        Strategy: create very short fragments (3-6 words) and long merged sentences."""
+        import numpy as np
+
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) < 5:
+            return text
+
+        lengths = [len(s.split()) for s in sentences]
+        current_stdev = float(np.std(lengths))
+        if current_stdev >= 8:
+            return text  # already bursty enough
+
+        result = list(sentences)
+        splits_done = 0
+
+        # Pass 1: Split long sentences EARLY to create one short fragment (3-6 words)
+        # and one long remainder — this maximizes variance
+        new_result = []
+        for i, sent in enumerate(result):
+            words = sent.split()
+            wlen = len(words)
+
+            if splits_done < 3 and wlen >= 14:
+                # Look for comma or conjunction in first 3-7 words
+                split_pos = None
+                for j in range(2, min(7, wlen - 6)):
+                    if words[j].endswith(','):
+                        split_pos = j + 1
+                        break
+                    if words[j].lower().rstrip(',') in ('and', 'but', 'which', 'because',
+                                                         'although', 'while', 'since', 'where'):
+                        split_pos = j
+                        break
+
+                if split_pos and 3 <= split_pos <= 7 and wlen - split_pos >= 6:
+                    part1 = ' '.join(words[:split_pos]).rstrip(',')
+                    part2 = ' '.join(words[split_pos:])
+
+                    if not part1.endswith(('.', '!', '?')):
+                        part1 = part1 + '.'
+                    if part2 and part2[0].islower():
+                        part2 = part2[0].upper() + part2[1:]
+
+                    new_result.append(part1)
+                    new_result.append(part2)
+                    splits_done += 1
+                    continue
+
+            new_result.append(sent)
+
+        result = new_result
+
+        # Pass 2: Merge 2-3 consecutive medium sentences into one very long sentence
+        merged = []
+        merges_done = 0
+        skip_next = False
+        for i in range(len(result)):
+            if skip_next:
+                skip_next = False
+                continue
+
+            sent = result[i]
+            words = sent.split()
+
+            # Merge two medium sentences (8-18 words each) into one long one (16-36)
+            if (merges_done < 2
+                    and 8 <= len(words) <= 18
+                    and i + 1 < len(result)
+                    and 8 <= len(result[i + 1].split()) <= 18):
+                next_sent = result[i + 1]
+                connector = random.choice([' \u2014 ', '; ', ', and in fact '])
+                combined = sent.rstrip('.!?') + connector + next_sent[0].lower() + next_sent[1:]
+                merged.append(combined)
+                merges_done += 1
+                skip_next = True
+            else:
+                merged.append(sent)
+
+        return ' '.join(merged)
+
+    def inject_imperfections(self, text: str, count: int = 2) -> str:
+        """Add subtle writing imperfections that classifiers associate with human writing.
+        Not errors — stylistic choices that AI rarely makes."""
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        if len(sentences) < 5:
+            return text
+
+        applied = 0
+        result = list(sentences)
+
+        # Pool of imperfection transforms
+        transforms = []
+
+        # Type 1: Hedging insertion — "shows that" → "seems to show that"
+        hedges = [
+            (r'\b(shows? that)\b', 'seems to show that'),
+            (r'\b(proves? that)\b', 'seems to suggest that'),
+            (r'\b(causes?)\b(?= [a-z])', 'is one of the causes of'),
+            (r'\b(demonstrates? that)\b', 'appears to demonstrate that'),
+        ]
+        for i, sent in enumerate(result):
+            if applied >= count:
+                break
+            for pattern, repl in hedges:
+                if re.search(pattern, sent, re.IGNORECASE):
+                    transforms.append(('hedge', i, pattern, repl))
+                    break
+
+        # Type 2: Intensifier addition — "important" → "really important"
+        intensifiers = [
+            (r'\b(important)\b', 'really important'),
+            (r'\b(significant)\b', 'pretty significant'),
+            (r'\b(complex)\b', 'quite complex'),
+            (r'\b(critical)\b', 'absolutely critical'),
+        ]
+        for i, sent in enumerate(result):
+            if len(transforms) >= count * 2:
+                break
+            for pattern, repl in intensifiers:
+                if re.search(pattern, sent, re.IGNORECASE):
+                    transforms.append(('intensify', i, pattern, repl))
+                    break
+
+        # Type 3: "So basically" or "In any case" before summary-like sentences
+        summary_starters = ["So basically, ", "In any case, ", "At the end of the day, "]
+        for i, sent in enumerate(result):
+            if i > len(result) * 0.6 and len(transforms) < count * 3:
+                first_word = sent.split()[0].lower() if sent.split() else ''
+                if first_word in ('this', 'these', 'the', 'overall', 'in'):
+                    transforms.append(('summary_prefix', i, None, random.choice(summary_starters)))
+                    break
+
+        # Shuffle and apply up to 'count' transforms
+        random.shuffle(transforms)
+        used_indices = set()
+
+        for kind, idx, pattern, repl in transforms:
+            if applied >= count or idx in used_indices:
+                continue
+
+            sent = result[idx]
+            if kind == 'hedge' or kind == 'intensify':
+                new_sent = re.sub(pattern, repl, sent, count=1, flags=re.IGNORECASE)
+                if new_sent != sent:
+                    result[idx] = new_sent
+                    applied += 1
+                    used_indices.add(idx)
+            elif kind == 'summary_prefix':
+                result[idx] = repl + sent[0].lower() + sent[1:]
+                applied += 1
+                used_indices.add(idx)
+
+        return ' '.join(result)
+
+    # ── Variant generation ────────────────────────────────────────────────
+    def generate_swap_variants(self, text: str, original_text: str = None) -> List[Tuple[str, Dict, str, List[Tuple[str, str]]]]:
+        """5 classifier-bypass variants combining contractions, burstiness,
+        imperfections, AI-telltale swaps, rare synonyms, parentheticals,
+        rhetorical questions, rhythm variation, and discourse markers.
+        NO T5. BERT-filtered against original."""
+        self.current_domain, confidence = self.detect_content_domain(text)
+        ref = original_text if original_text else text
+        raw = []
+
+        # Phase A: apply AI-telltale swaps as a base (safe, curated)
+        base, base_changes = self.safe_synonym_replace(
+            text, max_ratio=0.20, domain=self.current_domain, original_text=ref)
+
+        # Phase B: apply contractions + burstiness to base (classifier signals)
+        base = self.inject_contractions(base)
+        base = self.inject_burstiness(base)
+
+        # (name, rare_ratio, parens, rhetorical, rhythm, discourse, imperfections)
+        configs = [
+            ("classifier-light",      0.10, 0, 0, False, 2, 0),
+            ("classifier-moderate",   0.10, 1, 0, False, 0, 0),
+            ("classifier-structural", 0.0,  0, 1, True,  0, 0),
+            ("classifier-heavy",      0.15, 2, 0, False, 0, 2),
+            ("classifier-kitchen",    0.10, 1, 1, True,  1, 1),
+        ]
+
+        for name, rare_ratio, parens, rhetorical, rhythm, discourse, imperf in configs:
+            v = base
+            changes = list(base_changes)
+
+            # Rare synonym replacement (higher perplexity words)
+            if rare_ratio > 0:
+                v, rare_changes = self.rare_synonym_replace(
+                    v, max_ratio=rare_ratio, original_text=ref)
+                changes.extend(rare_changes)
+
+            # Writing imperfections (hedging, intensifiers)
+            if imperf > 0:
+                v = self.inject_imperfections(v, count=imperf)
+
+            # Structural perplexity injections
+            if rhythm:
+                v = self.vary_sentence_rhythm(v)
+            if rhetorical > 0:
+                v = self.inject_rhetorical_questions(v, count=rhetorical)
+            if parens > 0:
+                v = self.inject_parentheticals(v, count=parens)
+            if discourse > 0:
+                v = self.inject_discourse_markers(v, count=discourse)
+
+            raw.append((v, name, changes))
+
+        # BERT filter against original
+        ref_text = original_text if original_text else text
+        variants = []
+        for var_text, strategy, changes in raw:
+            filtered, reverted = self.bert_filter_sentences(ref_text, var_text)
+            if reverted > 0:
+                print(f"   🧠 BERT filter: reverted {reverted} sentence(s) in {strategy}")
+            metrics = self.calculate_real_metrics(ref_text, filtered)
+            variants.append((filtered, metrics, strategy, changes))
+
+        return variants
+
+    def generate_variants(self, text: str, original_text: str = None) -> List[Tuple[str, Dict, str, List[Tuple[str, str]]]]:
         """
-        5 strateji - hepsi dengeli, öğrenme ile optimize edilmiş
-        BERT filtering applied to each variant for quality control.
+        5 strategies using T5 sentence-level paraphrasing + post-processing.
+        Sentence-BERT filtering applied for quality control.
+        original_text: if provided, BERT filter compares against this (prevents cumulative drift).
         """
-        # Domain tespiti
         self.current_domain, confidence = self.detect_content_domain(text)
         print(f"🔍 Detected domain: {self.current_domain} (confidence: {confidence:.2f})")
 
         raw_variants = []
 
-        if self._use_parrot and self._parrot:
-            print("   🦜 Using Parrot paraphraser engine")
-            for strategy in ["light", "balanced", "structural", "human-noise", "kitchen-sink"]:
-                v, changes = self._parrot.paraphrase(text, strategy=strategy)
-                # Apply additional transforms per strategy
-                if strategy == "balanced":
-                    v = self.advanced_restructure(v, aggressiveness=0.3)
-                elif strategy == "structural":
-                    v = self.advanced_restructure(v, aggressiveness=0.5)
-                    v = self.split_long_sentences(v)
-                    v = self.reorder_sentences(v)
-                elif strategy == "human-noise":
-                    v = self.typo_inject(v, count=2)
-                    v = self.add_filler_phrases(v, count=2)
-                elif strategy == "kitchen-sink":
-                    v = self.advanced_restructure(v, aggressiveness=0.4)
-                    v = self.split_long_sentences(v)
-                    v = self.add_filler_phrases(v, count=1)
-                    v = self.typo_inject(v, count=1)
-                raw_variants.append((v, strategy, changes))
-        else:
-            # Default: BERT MLM synonym engine
-            # Strateji 1: Hafif (sadece eş anlamlı, öğrenilmiş)
-            v1, changes1 = self.intelligent_synonym_replace(text, max_ratio=0.2, domain=self.current_domain)
-            raw_variants.append((v1, "light", changes1))
+        # Word-level replacement ratios per strategy (main detection reducer)
+        synonym_ratios = {
+            "light": 0.25, "balanced": 0.30, "structural": 0.25,
+            "human-noise": 0.30, "kitchen-sink": 0.40,
+        }
 
-            # Strateji 2: Orta (eş anlamlı + yapısal)
-            v2, changes2 = self.intelligent_synonym_replace(text, max_ratio=0.35, domain=self.current_domain)
-            v2 = self.advanced_restructure(v2, aggressiveness=0.3)
-            raw_variants.append((v2, "balanced", changes2))
+        for strategy in ["light", "balanced", "structural", "human-noise", "kitchen-sink"]:
+            v, changes = self._t5.paraphrase(
+                text, strategy=strategy,
+                learning_engine=self.learning_engine
+            )
+            # Word-level synonym replacement on top of T5 paraphrasing
+            syn_ratio = synonym_ratios.get(strategy, 0.20)
+            ref = original_text if original_text else text
+            v, word_changes = self.safe_synonym_replace(v, max_ratio=syn_ratio,
+                                                         domain=self.current_domain,
+                                                         original_text=ref)
+            changes = changes + word_changes
 
-            # Strateji 3: Yapısal odaklı (daha az eş anlamlı, daha çok yapı)
-            v3, changes3 = self.intelligent_synonym_replace(text, max_ratio=0.15, domain=self.current_domain)
-            v3 = self.advanced_restructure(v3, aggressiveness=0.5)
-            v3 = self.split_long_sentences(v3)
-            v3 = self.reorder_sentences(v3)
-            raw_variants.append((v3, "structural", changes3))
+            # Strategy-specific post-processing
+            if strategy == "balanced":
+                v = self.advanced_restructure(v, aggressiveness=0.3)
+            elif strategy == "structural":
+                v = self.advanced_restructure(v, aggressiveness=0.5)
+                v = self.split_long_sentences(v)
+                v = self.reorder_sentences(v)
+            elif strategy == "human-noise":
+                v = self.typo_inject(v, count=2)
+                v = self.add_filler_phrases(v, count=2)
+            elif strategy == "kitchen-sink":
+                v = self.advanced_restructure(v, aggressiveness=0.4)
+                v = self.split_long_sentences(v)
+                v = self.add_filler_phrases(v, count=1)
+                v = self.typo_inject(v, count=1)
+            raw_variants.append((v, strategy, changes))
 
-            # Strateji 4: Human-noise (typo + filler + synonym)
-            v4, changes4 = self.intelligent_synonym_replace(text, max_ratio=0.20, domain=self.current_domain)
-            v4 = self.typo_inject(v4, count=2)
-            v4 = self.add_filler_phrases(v4, count=2)
-            raw_variants.append((v4, "human-noise", changes4))
-
-            # Strateji 5: Kitchen-sink (all techniques combined, aggressive)
-            v5, changes5 = self.intelligent_synonym_replace(text, max_ratio=0.30, domain=self.current_domain)
-            v5 = self.advanced_restructure(v5, aggressiveness=0.4)
-            v5 = self.split_long_sentences(v5)
-            v5 = self.add_filler_phrases(v5, count=1)
-            v5 = self.typo_inject(v5, count=1)
-            raw_variants.append((v5, "kitchen-sink", changes5))
-
-        # Apply BERT sentence-level filter to each variant
+        # Apply Sentence-BERT filter to each variant (compare against original to prevent drift)
+        ref_text = original_text if original_text else text
         variants = []
         for var_text, strategy, changes in raw_variants:
-            filtered, reverted = self.bert_filter_sentences(text, var_text)
+            filtered, reverted = self.bert_filter_sentences(ref_text, var_text)
             if reverted > 0:
                 print(f"   🧠 BERT filter: reverted {reverted} sentence(s) in {strategy}")
             metrics = self.calculate_real_metrics(text, filtered)

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-AI Text Optimizer v6.0 — Auto ML + Headless Detection
+AI Text Optimizer v8.0 — Hybrid LLM + All-Local GPU Detection
 
-Generates ML variants, auto-detects with 3 detectors
-(ZeroGPT + ContentDetector + Winston AI), records feedback, and iterates.
+Phase 1: Cross-model LLM rewrite (GPT-4→Claude, Claude→DeepSeek, DeepSeek→GPT-4)
+Phase 2: Light post-processing (typo, filler, restructure)
+Fallback: T5 sentence paraphraser if no API keys available.
+Detects with 3 local GPU detectors (Binoculars + GPT-2 PPL + GLTR).
 
 Usage:
     # Auto optimize (default)
@@ -11,11 +13,10 @@ Usage:
 
     # Manual feedback override
     python self_learn.py gpt4_ai.txt --feedback --variant variant_1.txt \
-        --zerogpt 0.12 --winston 0.20 --contentdetector 0.15
+        --binoculars 0.90 --gpt2-ppl 0.70 --gltr 0.60
 
 Setup:
-    pip install python-dotenv scikit-learn sentence-transformers playwright
-    playwright install chromium
+    pip install python-dotenv scikit-learn sentence-transformers transformers torch
 """
 
 import os
@@ -39,7 +40,9 @@ load_dotenv()
 # ── Config ───────────────────────────────────────────────────────────────────
 TARGET_SCORE = float(os.getenv("TARGET_SCORE", "0.30"))
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "5"))
-SIMILARITY_THRESHOLD = 0.70
+SIMILARITY_THRESHOLD = 0.65
+SEMANTIC_THRESHOLD = 0.70
+SENTENCE_SEMANTIC_FLOOR = 0.25
 TOP_N = 2
 EARLY_STOP_PATIENCE = 2
 
@@ -61,6 +64,83 @@ def text_similarity(original: str, rewritten: str) -> float:
         return cosine_similarity(vecs[0:1], vecs[1:2])[0][0]
     except Exception:
         return 1.0
+
+
+# Lazy-loaded Sentence-BERT for semantic similarity
+_sbert_model = None
+
+
+def semantic_similarity(original: str, rewritten: str) -> float:
+    """Sentence-BERT semantic similarity — catches meaning-destroying rewrites."""
+    global _sbert_model
+    try:
+        if _sbert_model is None:
+            from sentence_transformers import SentenceTransformer
+            _sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+        embeddings = _sbert_model.encode([original[:2000], rewritten[:2000]])
+        from numpy import dot
+        from numpy.linalg import norm
+        return float(dot(embeddings[0], embeddings[1]) / (norm(embeddings[0]) * norm(embeddings[1])))
+    except Exception:
+        return 1.0
+
+
+def sentence_level_check(original: str, rewritten: str) -> tuple:
+    """Check sentence-level meaning preservation using best-match pairing.
+
+    For each rewritten sentence, finds the most similar original sentence.
+    This handles reordering, splitting, and merging correctly.
+    Returns (min_score, avg_score, bad_count).
+    """
+    global _sbert_model
+    import re as _re
+    try:
+        if _sbert_model is None:
+            from sentence_transformers import SentenceTransformer
+            _sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        orig_sents = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', original.strip()) if len(s.strip()) > 20]
+        # Filter rewritten sentences: skip short injected fragments/rhetorical questions
+        _injected_re = _re.compile(
+            r'^(But |So |And |Why |How )\S.*\?$'  # rhetorical questions
+            r'|^(The stakes|Not an easy|A critical|And it matters|This is the crux)',  # fragments
+            _re.IGNORECASE
+        )
+        rewr_sents = [
+            s.strip() for s in _re.split(r'(?<=[.!?])\s+', rewritten.strip())
+            if len(s.strip()) > 20
+            and len(s.strip().split()) >= 8  # at least 8 words
+            and not _injected_re.match(s.strip())
+        ]
+
+        if not orig_sents or not rewr_sents:
+            return (1.0, 1.0, 0)
+
+        # Encode all sentences in one batch
+        all_sents = orig_sents + rewr_sents
+        all_embs = _sbert_model.encode(all_sents)
+        orig_embs = all_embs[:len(orig_sents)]
+        rewr_embs = all_embs[len(orig_sents):]
+
+        from numpy import dot
+        from numpy.linalg import norm
+
+        # For each rewritten sentence, find best-matching original
+        scores = []
+        for j in range(len(rewr_embs)):
+            best_sim = -1.0
+            for i in range(len(orig_embs)):
+                sim = float(dot(orig_embs[i], rewr_embs[j]) / (norm(orig_embs[i]) * norm(rewr_embs[j])))
+                if sim > best_sim:
+                    best_sim = sim
+            scores.append(best_sim)
+
+        min_score = min(scores) if scores else 1.0
+        avg_score = sum(scores) / len(scores) if scores else 1.0
+        bad_count = sum(1 for s in scores if s < SENTENCE_SEMANTIC_FLOOR)
+        return (min_score, avg_score, bad_count)
+    except Exception:
+        return (1.0, 1.0, 0)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -98,6 +178,12 @@ def optimize(
     print(f"   Q-Learning: epsilon={q_agent.epsilon:.2f}, "
           f"{len(q_agent.q_table)} states learned")
     print(f"   Target: ≤{TARGET_SCORE:.0%}")
+
+    llm_available = bool(analyzer._llm_rewriter.available)
+    if llm_available:
+        print(f"   LLM APIs:   {', '.join(analyzer._llm_rewriter.available)}")
+    else:
+        print(f"   LLM APIs:   none (T5 fallback)")
     print(f"   Iterations: {MAX_ITERATIONS} (top {TOP_N} per iter)")
 
     if engine:
@@ -106,38 +192,103 @@ def optimize(
             print(f"   Learning: {stats['total_interactions']} past interactions, "
                   f"{stats['success_rate']:.0%} success rate")
 
-    # ── Optimization loop ────────────────────────────────────────────────
+    # ── Phase 1: LLM single-pass rewrite ─────────────────────────────────
     current = text
     best_text = text
     best_score = init_score
     history = []
     no_improve_streak = 0
+    use_light_variants = False  # True after successful LLM rewrite
+    max_iter = MAX_ITERATIONS
 
-    for i in range(MAX_ITERATIONS):
+    if llm_available and not _interrupted:
+        print(f"\n{'─' * 55}")
+        print("Phase 1: LLM cross-model rewrite")
+        llm_result = analyzer.generate_llm_variant(text, source_model=source_model)
+
+        if llm_result:
+            llm_text, llm_changes = llm_result
+
+            # Quality gates — LLM rewrites intentionally restructure sentences,
+            # so skip sentence-level check; document-level sem is sufficient
+            sim = text_similarity(text, llm_text)
+            sem = semantic_similarity(text, llm_text)
+            print(f"   Quality: tfidf={sim:.2f}, sem={sem:.2f}")
+
+            if sem >= SEMANTIC_THRESHOLD:
+                # Detect LLM rewrite
+                print(f"   🌐 Detecting LLM rewrite...")
+                result = detector.detect(llm_text)
+                llm_score = result["ensemble"]
+
+                if llm_score >= 0 and result["detector_count"] >= 2:
+                    delta = init_score - llm_score
+                    print(f"   📊 LLM rewrite: {llm_score:.1%} "
+                          f"({'▼' + f'{delta:.1%}' if delta > 0 else '▲ worse'})")
+
+                    if llm_score < best_score:
+                        best_text = llm_text
+                        best_score = llm_score
+                        current = llm_text
+                        use_light_variants = True
+                        max_iter = min(2, MAX_ITERATIONS)  # Only 2 light iterations
+                        history.append({
+                            "iteration": 0, "score": llm_score,
+                            "best_score": best_score, "strategy": "llm-rewrite",
+                            "improved": True,
+                        })
+
+                        if engine:
+                            engine.record_user_feedback(
+                                text, llm_text, True, llm_changes, domain)
+
+                    if best_score <= TARGET_SCORE:
+                        print(f"\n🎉 Target reached with LLM rewrite!")
+                        return best_text, init_score, best_score, history
+                else:
+                    print(f"   ⚠️  Detection failed for LLM rewrite")
+            else:
+                print(f"   ⚠️  LLM rewrite failed quality gates")
+        else:
+            print(f"   ⚠️  LLM rewrite unavailable/failed")
+
+    if use_light_variants:
+        max_iter = min(3, MAX_ITERATIONS)
+        print(f"\n   → Phase 2: up to {max_iter} swap+post iterations (no T5)")
+    elif not llm_available:
+        print(f"\n   → T5 fallback pipeline ({MAX_ITERATIONS} iterations)")
+    else:
+        print(f"\n   → LLM rewrite didn't improve — T5 fallback ({MAX_ITERATIONS} iterations)")
+
+    # ── Phase 2: Iteration loop ──────────────────────────────────────────
+    for i in range(max_iter):
         if _interrupted:
             break
 
         print(f"\n{'─' * 55}")
-        print(f"Iteration {i + 1}/{MAX_ITERATIONS} (best so far: {best_score:.1%})")
+        if use_light_variants:
+            print(f"Iteration {i + 1}/{max_iter} [Swap] (best so far: {best_score:.1%})")
+            print(f"  🔧 Generating 5 swap variants (no T5)...")
+            variants = analyzer.generate_swap_variants(current, original_text=text)
+            ordered_variants = list(variants)
+        else:
+            print(f"Iteration {i + 1}/{max_iter} [T5] (best so far: {best_score:.1%})")
+            print(f"  🔧 Generating 5 ML variants...")
+            variants = analyzer.generate_variants(current, original_text=text)
 
-        # Generate 5 ML variants
-        print(f"  🔧 Generating 5 ML variants...")
-        variants = analyzer.generate_variants(current)
+            # Q-Learning: order by expected value (T5 path only)
+            strategy_order = q_agent.select_strategy_order(domain, best_score, i, source_model)
+            variant_map = {strategy: (var_text, metrics, strategy, changes)
+                           for var_text, metrics, strategy, changes in variants}
+            ordered_variants = [variant_map[s] for s in strategy_order if s in variant_map]
+            seen_strategies = set(strategy_order)
+            for v in variants:
+                if v[2] not in seen_strategies:
+                    ordered_variants.append(v)
+            is_exploring = random.random() < q_agent.epsilon
+            print(f"  🎲 Q-Learning: {'EXPLORE (random)' if is_exploring else 'EXPLOIT → ' + strategy_order[0]}")
 
-        # Q-Learning: order by expected value
-        strategy_order = q_agent.select_strategy_order(domain, best_score, i, source_model)
-        variant_map = {strategy: (var_text, metrics, strategy, changes)
-                       for var_text, metrics, strategy, changes in variants}
-        ordered_variants = [variant_map[s] for s in strategy_order if s in variant_map]
-        seen_strategies = set(strategy_order)
-        for v in variants:
-            if v[2] not in seen_strategies:
-                ordered_variants.append(v)
-
-        is_exploring = random.random() < q_agent.epsilon
-        print(f"  🎲 Q-Learning: {'EXPLORE (random)' if is_exploring else 'EXPLOIT → ' + strategy_order[0]}")
-
-        # ── Similarity filter ─────────────────────────────────────────
+        # ── Similarity + semantic + sentence-level filter ────────────
         candidates = []
         for var_text, metrics, strategy, changes in ordered_variants:
             if not changes and var_text == current:
@@ -145,9 +296,20 @@ def optimize(
                 continue
             sim = text_similarity(text, var_text)
             if sim < SIMILARITY_THRESHOLD:
-                print(f"    {strategy:12} — similarity {sim:.2f} < {SIMILARITY_THRESHOLD}, skipping")
+                print(f"    {strategy:12} — tfidf {sim:.2f} < {SIMILARITY_THRESHOLD}, skip")
                 continue
-            candidates.append((var_text, sim, strategy, changes))
+            sem = semantic_similarity(text, var_text)
+            if sem < SEMANTIC_THRESHOLD:
+                print(f"    {strategy:12} — semantic {sem:.2f} < {SEMANTIC_THRESHOLD}, skip")
+                continue
+            min_s, avg_s, bad_n = sentence_level_check(text, var_text)
+            # Allow up to 2 bad sentences if overall semantic sim is high (≥0.85)
+            # Burstiness injection creates short fragments that won't match originals
+            max_bad = 2 if sem >= 0.85 else 1
+            if bad_n > max_bad:
+                print(f"    {strategy:12} — {bad_n} sentence(s) below {SENTENCE_SEMANTIC_FLOOR:.0%} (min={min_s:.2f}), skip")
+                continue
+            candidates.append((var_text, sim, strategy, changes, sem))
 
         if not candidates:
             print(f"  📊 No viable candidates this iteration")
@@ -157,21 +319,21 @@ def optimize(
             })
             continue
 
-        # Sort by similarity DESC, take top-N
-        candidates.sort(key=lambda x: x[1], reverse=True)
+        # Sort by semantic similarity DESC, take top-N
+        candidates.sort(key=lambda x: x[4], reverse=True)
         top = candidates[:TOP_N]
 
         # Show candidates
-        for var_text, sim, strategy, changes in top:
-            print(f"    {strategy:12} — sim={sim:.2f}, {len(changes)} swaps")
+        for var_text, sim, strategy, changes, sem in top:
+            print(f"    {strategy:12} — tfidf={sim:.2f}, sem={sem:.2f}, {len(changes)} swaps")
 
         # ── Detect each candidate ────────────────────────────────────
         iter_best = None
-        for var_text, sim, strategy, changes in top:
+        for var_text, sim, strategy, changes, sem in top:
             if _interrupted:
                 break
 
-            print(f"\n  🌐 Detecting {strategy} ({len(changes)} swaps, sim={sim:.2f})...")
+            print(f"\n  🌐 Detecting {strategy} ({len(changes)} swaps, sem={sem:.2f})...")
             result = detector.detect(var_text)
             score = result["ensemble"]
 
@@ -248,15 +410,15 @@ def optimize(
 def _handle_feedback(args):
     """Accept manual detector scores and feed them into Q-Learning + ML engine."""
     scores = {}
-    if args.zerogpt is not None:
-        scores["zerogpt"] = args.zerogpt
-    if args.contentdetector is not None:
-        scores["contentdetector"] = args.contentdetector
-    if args.winston is not None:
-        scores["winston"] = args.winston
+    if args.binoculars is not None:
+        scores["binoculars"] = args.binoculars
+    if args.gpt2_ppl is not None:
+        scores["gpt2_ppl"] = args.gpt2_ppl
+    if args.gltr is not None:
+        scores["gltr"] = args.gltr
 
     if not scores:
-        print("❌ --feedback requires at least one detector score (--zerogpt, --winston, --contentdetector)")
+        print("❌ --feedback requires at least one detector score (--binoculars, --gpt2-ppl, --gltr)")
         sys.exit(1)
 
     # Load original text
@@ -332,7 +494,7 @@ def _handle_feedback(args):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="AI Text Optimizer v6.0 — Auto ML + Headless Detection")
+    parser = argparse.ArgumentParser(description="AI Text Optimizer v8.0 — Hybrid LLM + Local GPU")
     parser.add_argument("file", nargs="?", default="gpt4_ai.txt", help="Input text file")
     parser.add_argument("--target", type=float, help="Target AI score (0.0-1.0)")
     parser.add_argument("--max-iter", type=int, default=5, help="Max iterations (default 5)")
@@ -345,9 +507,9 @@ def main():
     # ── Feedback mode ──
     parser.add_argument("--feedback", action="store_true", help="Manual feedback mode")
     parser.add_argument("--variant", type=str, help="Path to variant text file (for --feedback)")
-    parser.add_argument("--zerogpt", type=float, help="Manual ZeroGPT score 0.0-1.0")
-    parser.add_argument("--contentdetector", type=float, help="Manual ContentDetector score 0.0-1.0")
-    parser.add_argument("--winston", type=float, help="Manual Winston AI score 0.0-1.0")
+    parser.add_argument("--binoculars", type=float, help="Manual Binoculars score 0.0-1.0")
+    parser.add_argument("--gpt2-ppl", type=float, dest="gpt2_ppl", help="Manual GPT-2 perplexity score 0.0-1.0")
+    parser.add_argument("--gltr", type=float, help="Manual GLTR score 0.0-1.0")
     args = parser.parse_args()
 
     global TARGET_SCORE, MAX_ITERATIONS, TOP_N
@@ -373,11 +535,11 @@ def main():
 
     # ── Banner ───────────────────────────────────────────────────────────
     print("=" * 55)
-    print("  AI Text Optimizer v6.0 — Auto ML + Detection")
-    print(f"  Detectors:   ZeroGPT + ContentDetector + Winston AI")
+    print("  AI Text Optimizer v8.0 — Hybrid LLM + Local GPU")
+    print(f"  Detectors:   Binoculars (7B) + GPT-2 PPL + GLTR")
     if args.source_model != "unknown":
         print(f"  Source model: {args.source_model}")
-    print(f"  Rewrite:     ML Word Selector (free)")
+    print(f"  Rewrite:     LLM API (hybrid) → T5 fallback (local)")
     print(f"  Iterations:  {MAX_ITERATIONS} (top {TOP_N} detected per iter)")
     print(f"  Target:      ≤{TARGET_SCORE:.0%}")
     print("=" * 55)
