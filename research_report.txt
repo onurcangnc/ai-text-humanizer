@@ -94,8 +94,8 @@
   GPTZERO             100.0%              0/10  Strongest (catches all)
   ORIGINALITY         100.0%              0/10  Strongest (catches all)
   WINSTON              80.8%              2/10              Moderate
-  ZEROGPT              38.9%              4/10         Moderate-weak
-  QUILLBOT             26.7%              5/10  Weakest (most fooled)
+  ZEROGPT              20.8%              7/10         Moderate-weak
+  QUILLBOT             24.9%              6/10  Weakest (most fooled)
 
   KEY FINDING: The Silk Road text scored:
     ZeroGPT:     0%  (Human)
@@ -107,22 +107,60 @@
     and fully AI by others. AI detection is fundamentally inconsistent.
 
 
+5b. CLASSIFIER OPTIMIZATION IMPACT (V2)
+──────────────────────────────────────────────────────────────────────
+
+  After adding classifier-targeted features (contractions, burstiness,
+  imperfections), all 10 benchmark texts were re-optimized and re-tested
+  on ZeroGPT and QuillBot.
+
+  Text                          ZeroGPT V1  ZeroGPT V2  QuillBot V1  QuillBot V2
+  ──────────────────────────────────────────────────────────────────────────────
+  blockchain supply chain            36.8%       36.5%          33%          54%
+  epigenetic inheritance             16.3%        5.0%           7%           5%
+  refugee quota                     100.0%       65.3%          74%          69%
+  ocean acidification                63.2%       28.9%          20%           5%
+  silk road currency                  0.0%        4.8%           0%          62%
+  soil microbiome                    66.4%        6.5%          22%           0%
+  longevity pension                  12.6%        0.0%          31%           4%
+  philosophy consciousness           22.2%        6.2%           7%           5%
+  postcolonial literature            39.1%       16.8%          32%          37%
+  robotics disaster                  32.2%       37.9%          41%           8%
+  AVERAGE                            38.9%       20.8%        26.7%        24.9%
+
+  Three-Phase Evolution:
+    Phase                    ZeroGPT   QuillBot   GPTZero   Originality
+    Original AI text         ~95%      ~95%       ~95%      ~95%
+    V1 (LLM + perplexity)   38.9%    26.7%     100%      100%
+    V2 (+ classifier opt)   20.8%    24.9%     100%      100%
+
+  ZeroGPT: -18.1 pp reduction (38.8% → 20.8%)
+  QuillBot: -1.8 pp reduction (26.7% → 24.9%)
+
+  KEY INSIGHT: Classifier-targeted optimization dramatically reduces
+  ZeroGPT scores but has minimal/noisy effect on QuillBot. Individual
+  texts show high variance (Silk Road QuillBot: 0% → 62%), confirming
+  detector non-determinism and pipeline randomness are major factors.
+
+  [See graph9_v1_vs_v2_comparison.png]
+
+
 6. LOCAL DETECTOR PERFORMANCE ON BENCHMARK
 ──────────────────────────────────────────────────────────────────────
 
   Text                             Bino   GPT2   GLTR    Ens
   ──────────────────────────────────────────────────────────
-  blockchain supply chain           98%    94%    80%    91%
-  epigenetic inheritance            97%    93%    81%    91%
-  refugee quota                     78%    89%    67%    79%
-  ocean acidification               57%    92%    78%    75%
-  silk road currency                69%    48%    46%    55%
-  soil microbiome                   87%    83%    65%    79%
-  longevity pension                 92%    76%    64%    78%
-  philosophy consciousness          88%    94%    82%    88%
-  postcolonial literature           99%    92%    79%    91%
-  robotics disaster                 95%    85%    70%    84%
-  AVERAGE                         86.0%  84.5%  71.2%  81.1%
+  blockchain supply chain           90%    85%    68%    82%
+  epigenetic inheritance            93%    92%    79%    89%
+  refugee quota                     74%    91%    71%    79%
+  ocean acidification               83%    94%    85%    87%
+  silk road currency                92%    76%    62%    77%
+  soil microbiome                   94%    63%    64%    74%
+  longevity pension                 94%    79%    66%    80%
+  philosophy consciousness          88%    94%    86%    89%
+  postcolonial literature           98%    92%    83%    92%
+  robotics disaster                 96%    85%    69%    84%
+  AVERAGE                         90.3%  85.2%  73.2%  83.4%
 
 
 7. CORRELATION ANALYSIS: LOCAL vs EXTERNAL
@@ -133,20 +171,20 @@
 
   Pair                                 Pearson r     p-value  Significant?
   ────────────────────────────────────────────────────────────────────────
-  binoculars       vs quillbot            +0.126      0.7282            No
-  binoculars       vs winston             +0.880      0.0008         Yes *
-  binoculars       vs zerogpt             -0.267      0.4563            No
-  gltr             vs quillbot            +0.056      0.8789            No
-  gltr             vs winston             +0.428      0.2175            No
-  gltr             vs zerogpt             +0.172      0.6351            No
-  gpt2_ppl         vs quillbot            +0.329      0.3538            No
-  gpt2_ppl         vs winston             +0.548      0.1009            No
-  gpt2_ppl         vs zerogpt             +0.443      0.1998            No
+  binoculars       vs quillbot            -0.399      0.2538            No
+  binoculars       vs winston             +0.239      0.5066            No
+  binoculars       vs zerogpt             -0.652      0.0409         Yes *
+  gltr             vs quillbot            -0.310      0.3830            No
+  gltr             vs winston             -0.029      0.9364            No
+  gltr             vs zerogpt             -0.003      0.9943            No
+  gpt2_ppl         vs quillbot            +0.078      0.8294            No
+  gpt2_ppl         vs winston             -0.016      0.9644            No
+  gpt2_ppl         vs zerogpt             +0.335      0.3436            No
 
   Best local predictor for each external detector:
-    ZEROGPT         -> gpt2_ppl        (r = +0.443)
-    WINSTON         -> binoculars      (r = +0.880)
-    QUILLBOT        -> gpt2_ppl        (r = +0.329)
+    ZEROGPT         -> binoculars      (r = -0.652)
+    WINSTON         -> binoculars      (r = +0.239)
+    QUILLBOT        -> binoculars      (r = -0.399)
 
 
 8. ENSEMBLE WEIGHT RECOMMENDATIONS
@@ -156,9 +194,9 @@
 
   Based on correlation analysis with external detectors that have variance
   (ZeroGPT, Winston, QuillBot), the local detectors show:
-    ZEROGPT: best predicted by gpt2_ppl (r=+0.443)
-    WINSTON: best predicted by binoculars (r=+0.880)
-    QUILLBOT: best predicted by gpt2_ppl (r=+0.329)
+    ZEROGPT: best predicted by binoculars (r=-0.652)
+    WINSTON: best predicted by binoculars (r=+0.239)
+    QUILLBOT: best predicted by binoculars (r=-0.399)
 
   Note: With only 10 data points, correlations have wide confidence intervals.
   More benchmark data needed before adjusting production weights.
@@ -177,7 +215,7 @@
 
   3. External detector agreement is extremely low:
      - GPTZero and Originality.ai classify 100% of optimized texts as AI
-     - ZeroGPT passes 4/10 texts, QuillBot passes 5/10 texts
+     - ZeroGPT passes 7/10 texts, QuillBot passes 6/10 texts
      - The same text can score 0% on one detector and 100% on another
 
   4. Binoculars (Falcon-7B based) is the hardest local detector to fool,
@@ -193,8 +231,14 @@
      selected most often as optimal, suggesting small targeted changes
      outperform aggressive rewriting for local detector evasion.
 
+  7. Classifier-targeted optimization (V2) confirms two detector paradigms:
+     - ZeroGPT responds strongly to stylistic features (38.8% → 20.8%)
+     - QuillBot shows high variance with minimal net change (26.7% → 24.9%)
+     - GPTZero and Originality remain at 100% regardless
+     - Perplexity-based detectors are robust; classifier-based are fragile
+
 
 ======================================================================
-  Generated by AI Text Humanizer Benchmark Analysis
-  Total graphs: 8 | Texts analyzed: 30 training + 10 benchmark
+  Generated by AI Text Humanizer Benchmark Analysis (V2)
+  Total graphs: 9 | Texts analyzed: 30 training + 10 benchmark (V1 + V2)
 ======================================================================

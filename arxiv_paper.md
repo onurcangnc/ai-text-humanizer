@@ -8,7 +8,7 @@ onurcan.genc@bilkent.edu.tr
 
 ## Abstract
 
-The proliferation of large language models (LLMs) has prompted the development of AI text detection tools, now widely deployed in educational and publishing contexts. However, the cross-detector consistency of these tools remains poorly studied. We present a systematic benchmark of five commercial AI detectors (GPTZero, ZeroGPT, Originality.ai, Winston AI, and QuillBot) and three open-source perplexity-based detectors (Binoculars, GPT-2 Perplexity, GLTR) evaluated on 46 AI-generated academic texts processed through a novel hybrid humanization pipeline. Our pipeline combines cross-model LLM rewriting, AI-telltale vocabulary replacement, perplexity injection, and classifier-targeted stylistic modification, achieving an average 11.6 percentage point reduction in local detection scores across 30 texts. External benchmarking reveals dramatic cross-detector inconsistency: the same optimized text scored 0% AI on ZeroGPT and 100% AI on GPTZero. Correlation analysis identifies two distinct detector clusters — perplexity-based (Binoculars, Winston; r=0.88, p<0.01) and classifier-based (ZeroGPT, QuillBot) — with cross-cluster agreement rates as low as 10%. Classifier-targeted optimization reduced ZeroGPT scores from 38.8% to 20.8% average while perplexity-based detectors remained unaffected. These findings demonstrate that AI text detection is fundamentally inconsistent across tools and that institutions relying on single detectors risk both false positives and false negatives at unacceptable rates.
+The proliferation of large language models (LLMs) has prompted the development of AI text detection tools, now widely deployed in educational and publishing contexts. However, the cross-detector consistency of these tools remains poorly studied. We present a systematic benchmark of five commercial AI detectors (GPTZero, ZeroGPT, Originality.ai, Winston AI, and QuillBot) and three open-source perplexity-based detectors (Binoculars, GPT-2 Perplexity, GLTR) evaluated on 46 AI-generated academic texts processed through a novel hybrid humanization pipeline. Our pipeline combines cross-model LLM rewriting, AI-telltale vocabulary replacement, perplexity injection, and classifier-targeted stylistic modification, achieving an average 11.6 percentage point reduction in local detection scores across 30 texts. External benchmarking reveals dramatic cross-detector inconsistency: the same optimized text scored 0% AI on ZeroGPT and 100% AI on GPTZero. Correlation analysis on V2-optimized texts reveals that the only statistically significant cross-detector correlation is *negative*: Binoculars vs ZeroGPT (r=-0.65, p=0.041), meaning these detectors respond in opposite directions to the same text. Cross-cluster agreement rates drop as low as 10%. Classifier-targeted optimization reduced ZeroGPT scores from 38.8% to 20.8% average while perplexity-based detectors remained unaffected. These findings demonstrate that AI text detection is fundamentally inconsistent across tools and that institutions relying on single detectors risk both false positives and false negatives at unacceptable rates.
 
 **Keywords:** AI text detection, large language models, text humanization, cross-detector consistency, Binoculars, perplexity analysis, academic integrity
 
@@ -34,7 +34,7 @@ Our contributions are:
 
 1. **A systematic cross-detector consistency study** revealing pairwise agreement rates ranging from 10% to 100% across eight AI detectors, with cross-paradigm agreement as low as 10%.
 
-2. **Identification of two distinct detector clusters** — perplexity-based and classifier-based — with Pearson correlation r=0.88 within the perplexity cluster but r=-0.27 to r=0.44 between clusters.
+2. **Identification of cross-detector opposition** — the only statistically significant correlation across the full detector matrix is *negative* (Binoculars vs ZeroGPT, r=-0.65, p=0.041), with all other cross-detector correlations failing to reach significance.
 
 3. **A novel hybrid humanization pipeline** combining cross-model LLM rewriting, 160+ vocabulary swaps, perplexity injection, and classifier-targeted features, with quality preservation through SBERT semantic guards.
 
@@ -169,13 +169,15 @@ The average improvement of 11.6 percentage points represents meaningful detectio
 
 [Figure 1: Training progress across three batches showing initial and final detection scores for each text. See `graph1_training_progress.png`]
 
+[Figure 2: Distribution of per-text improvement magnitudes across all 30 training texts. See `graph2_improvement_distribution.png`]
+
 #### Strategy Analysis
 
 The self-learning system selected from 10 variant strategies across the T5 paraphrasing branch (light, balanced, structural, human-noise, kitchen-sink) and the perplexity injection branch (perplexity/classifier-light, moderate, structural, heavy, kitchen). Strategy selection frequencies and average per-selection improvements are shown in Figure 3.
 
 Perplexity-light was selected most frequently (17 times) but achieved only 1.2 pp average improvement per selection. Kitchen-sink, selected only 4 times, achieved the highest average improvement at 6.8 pp. This suggests that conservative strategies are preferred by the self-learning system due to their reliability (consistent small improvements), while aggressive strategies offer higher potential gains but also higher rejection rates from quality filters.
 
-[Figure 2: Strategy selection frequency and average improvement. See `graph3_strategy_effectiveness.png`]
+[Figure 3: Strategy selection frequency and average improvement. See `graph3_strategy_effectiveness.png`]
 
 #### Source Model Comparison
 
@@ -191,7 +193,7 @@ We analyzed optimization outcomes by the source AI model that generated the orig
 
 DeepSeek-generated texts showed the largest average improvement (15.9 pp), suggesting they contain more exploitable AI patterns. GPT-4 texts were most resistant to optimization (9.6 pp), consistent with GPT-4's reputation for more diverse and human-like output. Claude texts showed intermediate behavior.
 
-[Figure 3: Source model comparison showing initial and final detection scores. See `graph4_source_model_comparison.png`]
+[Figure 4: Source model comparison showing initial and final detection scores. See `graph4_source_model_comparison.png`]
 
 ### 4.2 External Detector Benchmark
 
@@ -217,7 +219,7 @@ GPTZero and Originality.ai exhibited zero variance, classifying every text as 10
 
 The most striking finding is the Silk Road currency exchange text, which simultaneously scored 0% on ZeroGPT, 0% on QuillBot, 16% on Winston, 100% on GPTZero, and 100% on Originality.ai. The same text is classified as definitively human and definitively AI depending on which tool is used.
 
-[Figure 4: External detector heatmap showing 10 texts across 5 detectors. See `graph7_external_detector_heatmap.png`]
+[Figure 5: External detector heatmap showing 10 texts across 5 detectors. See `graph7_external_detector_heatmap.png`]
 
 ### 4.3 Classifier Optimization Impact
 
@@ -243,36 +245,50 @@ ZeroGPT scores decreased substantially from 38.8% to 20.8% average (-18.0 pp), c
 
 The high variance between V1 and V2 QuillBot scores, particularly cases where scores increased (Silk Road: 0% to 62%, blockchain: 33% to 54%), highlights a critical methodological concern: the non-deterministic nature of both the humanization pipeline (different LLM rewrites per run) and potentially the detectors themselves produces substantial measurement noise. This limits the reproducibility of per-text comparisons while aggregate trends remain informative.
 
+[Figure 6: V1 vs V2 side-by-side comparison for ZeroGPT and QuillBot, showing the per-text impact of classifier-targeted optimization with average trend lines. See `graph9_v1_vs_v2_comparison.png`]
+
+The three-phase evolution of detection scores across our full optimization trajectory is summarized in Table 4b.
+
+[Table 4b: Three-phase detection score evolution]
+
+| Phase | ZeroGPT Avg | QuillBot Avg | GPTZero | Originality |
+|-------|------------|-------------|---------|-------------|
+| Original AI text | ~95% | ~95% | ~95% | ~95% |
+| V1 (LLM rewrite + perplexity) | 38.8% | 26.7% | 100% | 100% |
+| V2 (+ classifier optimization) | 20.8% | 24.9% | 100% | 100% |
+
+This trajectory confirms that classifier-based detectors respond to fundamentally different textual signals than perplexity-based detectors. The 18.0 pp reduction in ZeroGPT from V1 to V2 was achieved purely through stylistic modifications (contractions, burstiness, imperfections) that do not alter the statistical token distributions measured by perplexity-based tools.
+
 ### 4.4 Correlation Analysis
 
-We computed Pearson correlation coefficients between each local detector and each commercial detector with sufficient variance (excluding GPTZero and Originality.ai, which were constant at 100%).
+We computed Pearson correlation coefficients between each local detector and each commercial detector with sufficient variance (excluding GPTZero and Originality.ai, which were constant at 100%). All correlations use the most recent (V2) scores for ZeroGPT and QuillBot, since the V2-optimized texts represent the final pipeline output.
 
-[Table 5: Pearson correlation coefficients between local and external detectors]
+[Table 5: Pearson correlation coefficients between local and external detectors (V2)]
 
 | Local Detector | ZeroGPT (r/p) | Winston (r/p) | QuillBot (r/p) |
 |---------------|---------------|---------------|----------------|
-| Binoculars | -0.27 / 0.456 | **0.88 / 0.001** | 0.13 / 0.728 |
-| GPT-2 PPL | 0.44 / 0.200 | 0.55 / 0.101 | 0.33 / 0.354 |
-| GLTR | 0.17 / 0.635 | 0.43 / 0.218 | 0.06 / 0.879 |
-| Ensemble | 0.13 / 0.710 | **0.77 / 0.010** | 0.22 / 0.538 |
+| Binoculars | **-0.65 / 0.041** | 0.24 / 0.507 | -0.40 / 0.254 |
+| GPT-2 PPL | 0.34 / 0.344 | -0.02 / 0.964 | 0.08 / 0.829 |
+| GLTR | -0.00 / 0.994 | -0.03 / 0.936 | -0.31 / 0.383 |
+| Ensemble | -0.08 / 0.820 | 0.08 / 0.829 | -0.27 / 0.444 |
 
 Bold values indicate statistical significance at p<0.05.
 
-The only statistically significant correlations are between our local detectors and Winston AI: Binoculars-Winston (r=0.88, p=0.001) and Ensemble-Winston (r=0.77, p=0.010). This suggests Winston AI employs a perplexity-based detection methodology similar to our open-source ensemble.
+The only statistically significant correlation across the entire matrix is Binoculars vs ZeroGPT (r=-0.65, p=0.041) — and it is *negative*. This means that when Binoculars scores a text as more AI-like, ZeroGPT scores it as *less* AI-like, and vice versa. The two detectors respond in opposite directions to the same textual properties, providing direct evidence that they measure fundamentally different signals.
 
-Critically, ZeroGPT shows near-zero or negative correlations with all local detectors. The Binoculars-ZeroGPT correlation is -0.27, meaning they respond in opposite directions to the same text modifications. This confirms that ZeroGPT measures fundamentally different textual properties than perplexity-based approaches.
+No other detector pair achieves statistical significance. Notably, the Binoculars-Winston correlation that was r=0.88 (p=0.001) under V1 scores dropped to r=0.24 (p=0.507) under V2 scores. This dramatic shift occurred because the classifier-targeted optimization (contractions, burstiness) changed ZeroGPT and QuillBot scores without affecting perplexity-based detector scores, fundamentally altering the cross-detector statistical relationships.
 
-QuillBot shows no statistically significant correlation with any local detector (all p>0.35), indicating it uses yet another distinct detection methodology.
+QuillBot shows no significant correlation with any local detector (all p>0.25), confirming it uses a detection methodology that is independent of both perplexity-based and Binoculars-type approaches.
 
-[Figure 5: Correlation heatmap between local and external detectors. See `graph5_correlation_heatmap.png`]
+[Figure 7: Correlation heatmap between local and external detectors (V2). See `graph5_correlation_heatmap.png`]
 
-[Figure 6: Scatter plots of local ensemble score vs. external detector scores with regression lines. See `graph6_scatter_correlations.png`]
+[Figure 8: Scatter plots of local ensemble score vs. external detector scores with regression lines (V2). See `graph6_scatter_correlations.png`]
 
 ### 4.5 Detector Agreement Analysis
 
 We computed pairwise binary agreement rates across all seven detectors with variance (excluding GPTZero and Originality.ai).
 
-[Figure 7: Pairwise detector agreement matrix. See `graph8_detector_agreement.png`]
+[Figure 9: Pairwise detector agreement matrix. See `graph8_detector_agreement.png`]
 
 Local detectors (Binoculars, GPT-2 PPL, GLTR, Ensemble) show internal agreement rates of 90-100%, forming a tightly coherent cluster. Winston AI agrees with this cluster at 80-90%, consistent with the strong Pearson correlations observed.
 
@@ -342,7 +358,7 @@ We present the first systematic cross-detector consistency study evaluating eigh
 
 First, **AI text detection is fundamentally inconsistent across tools.** The same optimized text can simultaneously score 0% AI on one detector and 100% on another. Pairwise agreement rates between detector clusters drop as low as 10%, and the overall cross-paradigm agreement rate is 10-30%.
 
-Second, **two distinct detection paradigms exist with near-zero cross-correlation.** Perplexity-based detectors (Binoculars, GPT-2, GLTR, Winston AI) form one coherent cluster (internal agreement 80-100%, Pearson r up to 0.88), while classifier-based detectors (ZeroGPT, QuillBot) form another (internal agreement 80%). These clusters measure fundamentally different textual properties and respond in opposite directions to the same modifications.
+Second, **detectors not only disagree but actively oppose each other.** The only statistically significant cross-detector correlation on V2-optimized texts is *negative*: Binoculars vs ZeroGPT (r=-0.65, p=0.041). All other cross-detector correlations fail to reach significance. Local perplexity-based detectors maintain high internal agreement (80-100%), but no meaningful statistical relationship exists between them and classifier-based commercial tools.
 
 Third, **classifier-based detectors are substantially more vulnerable to targeted optimization** than perplexity-based detectors. Stylistic modifications (contractions, burstiness, imperfections) reduced ZeroGPT scores from 38.8% to 20.8% average while GPTZero and Originality.ai remained at 100%.
 

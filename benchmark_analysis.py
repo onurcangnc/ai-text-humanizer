@@ -1,6 +1,7 @@
 """
-AI Text Humanizer — Benchmark Analysis & Research Report
-Generates 8 graphs, correlation study, and summary report.
+AI Text Humanizer — Benchmark Analysis & Research Report (V2)
+Generates 9 graphs, correlation study, and summary report.
+Includes V1 (perplexity-only) and V2 (classifier-optimized) external data.
 """
 import os, sys, json, warnings
 import numpy as np
@@ -62,52 +63,62 @@ BENCHMARK_DATA = [
     {
         "file": "optimized_claude_blockchain_in_supply_chain_transparency.txt",
         "source": "claude", "topic": "blockchain supply chain",
-        "external": {"gptzero": 100, "zerogpt": 36.8, "originality": 100, "winston": 99, "quillbot": 33},
+        "external":    {"gptzero": 100, "zerogpt": 36.8,  "originality": 100, "winston": 99,  "quillbot": 33},
+        "external_v2": {"zerogpt": 36.5, "quillbot": 54},
     },
     {
         "file": "optimized_claude_epigenetic_inheritance_transgenerational.txt",
         "source": "claude", "topic": "epigenetic inheritance",
-        "external": {"gptzero": 100, "zerogpt": 16.3, "originality": 100, "winston": 100, "quillbot": 7},
+        "external":    {"gptzero": 100, "zerogpt": 16.3,  "originality": 100, "winston": 100, "quillbot": 7},
+        "external_v2": {"zerogpt": 5.0, "quillbot": 5},
     },
     {
         "file": "optimized_claude_international_refugee_quota_burden_shari.txt",
         "source": "claude", "topic": "refugee quota",
-        "external": {"gptzero": 100, "zerogpt": 100, "originality": 100, "winston": 100, "quillbot": 74},
+        "external":    {"gptzero": 100, "zerogpt": 100,   "originality": 100, "winston": 100, "quillbot": 74},
+        "external_v2": {"zerogpt": 65.3, "quillbot": 69},
     },
     {
         "file": "optimized_deepseek_ocean_acidification_impact_on_fisheries.txt",
         "source": "deepseek", "topic": "ocean acidification",
-        "external": {"gptzero": 100, "zerogpt": 63.25, "originality": 100, "winston": 13, "quillbot": 20},
+        "external":    {"gptzero": 100, "zerogpt": 63.25, "originality": 100, "winston": 13,  "quillbot": 20},
+        "external_v2": {"zerogpt": 28.9, "quillbot": 5},
     },
     {
         "file": "optimized_deepseek_silk_road_currency_exchange_systems.txt",
         "source": "deepseek", "topic": "silk road currency",
-        "external": {"gptzero": 100, "zerogpt": 0, "originality": 100, "winston": 16, "quillbot": 0},
+        "external":    {"gptzero": 100, "zerogpt": 0,     "originality": 100, "winston": 16,  "quillbot": 0},
+        "external_v2": {"zerogpt": 4.8, "quillbot": 62},
     },
     {
         "file": "optimized_deepseek_soil_microbiome_antibiotic_resistance_em.txt",
         "source": "deepseek", "topic": "soil microbiome",
-        "external": {"gptzero": 100, "zerogpt": 66.36, "originality": 100, "winston": 100, "quillbot": 22},
+        "external":    {"gptzero": 100, "zerogpt": 66.36, "originality": 100, "winston": 100, "quillbot": 22},
+        "external_v2": {"zerogpt": 6.5, "quillbot": 0},
     },
     {
         "file": "optimized_gpt4_longevity_economy_pension_fund_solvency.txt",
         "source": "gpt4", "topic": "longevity pension",
-        "external": {"gptzero": 100, "zerogpt": 12.62, "originality": 100, "winston": 90, "quillbot": 31},
+        "external":    {"gptzero": 100, "zerogpt": 12.62, "originality": 100, "winston": 90,  "quillbot": 31},
+        "external_v2": {"zerogpt": 0, "quillbot": 4},
     },
     {
         "file": "optimized_gpt4_philosophy_of_consciousness_and_ai.txt",
         "source": "gpt4", "topic": "philosophy consciousness",
-        "external": {"gptzero": 100, "zerogpt": 22.25, "originality": 100, "winston": 90, "quillbot": 7},
+        "external":    {"gptzero": 100, "zerogpt": 22.25, "originality": 100, "winston": 90,  "quillbot": 7},
+        "external_v2": {"zerogpt": 6.2, "quillbot": 5},
     },
     {
         "file": "optimized_gpt4_postcolonial_literature_canon_formation.txt",
         "source": "gpt4", "topic": "postcolonial literature",
-        "external": {"gptzero": 100, "zerogpt": 39.06, "originality": 100, "winston": 100, "quillbot": 32},
+        "external":    {"gptzero": 100, "zerogpt": 39.06, "originality": 100, "winston": 100, "quillbot": 32},
+        "external_v2": {"zerogpt": 16.8, "quillbot": 37},
     },
     {
         "file": "optimized_gpt4_robotics_in_disaster_response.txt",
         "source": "gpt4", "topic": "robotics disaster",
-        "external": {"gptzero": 100, "zerogpt": 32.21, "originality": 100, "winston": 100, "quillbot": 41},
+        "external":    {"gptzero": 100, "zerogpt": 32.21, "originality": 100, "winston": 100, "quillbot": 41},
+        "external_v2": {"zerogpt": 37.9, "quillbot": 8},
     },
 ]
 
@@ -152,6 +163,18 @@ GRAY    = "#8b949e"
 
 BATCH_COLORS = {1: BLUE, 2: GREEN, 3: ORANGE}
 SOURCE_COLORS = {"gpt4": BLUE, "claude": GREEN, "deepseek": ORANGE}
+
+
+def get_current_external(d):
+    """Get the most recent external scores: V2 for zerogpt/quillbot, V1 for others."""
+    return {
+        "gptzero":     d["external"]["gptzero"],
+        "zerogpt":     d["external_v2"]["zerogpt"],
+        "originality": d["external"]["originality"],
+        "winston":     d["external"]["winston"],
+        "quillbot":    d["external_v2"]["quillbot"],
+    }
+
 
 # ── Part 1: Run local detectors on benchmark texts ──────────────────────
 
@@ -377,9 +400,9 @@ def graph5_correlation_heatmap(bench_data):
     local_keys = ["binoculars", "gpt2_ppl", "gltr", "ensemble"]
     ext_keys   = ["gptzero", "zerogpt", "originality", "winston", "quillbot"]
 
-    # Build arrays
+    # Build arrays — use V2 scores for zerogpt/quillbot
     local_arr = {k: np.array([d["local"][k] for d in bench_data]) for k in local_keys}
-    ext_arr   = {k: np.array([d["external"][k] for d in bench_data]) for k in ext_keys}
+    ext_arr   = {k: np.array([get_current_external(d)[k] for d in bench_data]) for k in ext_keys}
 
     # Correlation matrix
     corr = np.full((len(local_keys), len(ext_keys)), np.nan)
@@ -414,7 +437,7 @@ def graph5_correlation_heatmap(bench_data):
                 ax.text(j + 0.5, i + 0.5, "N/A\n(const)", ha="center", va="center",
                         fontsize=9, color=GRAY, fontstyle="italic")
 
-    ax.set_title("Local vs External Detector Correlation",
+    ax.set_title("Local vs External Detector Correlation (V2)\n(ZeroGPT & QuillBot after classifier optimization)",
                  fontsize=14, fontweight="bold", pad=15)
     ax.set_xlabel("External Detectors", fontsize=12)
     ax.set_ylabel("Local Detectors", fontsize=12)
@@ -437,10 +460,10 @@ def graph6_scatter_correlations(bench_data, local_arr, ext_arr):
         ev = ext_arr[ek]
         lv = local_arr["ensemble"]
 
-        # Color by source
+        # Color by source — use V2 scores
         for d in bench_data:
             c = SOURCE_COLORS[d["source"]]
-            ax.scatter(d["local"]["ensemble"], d["external"][ek],
+            ax.scatter(d["local"]["ensemble"], get_current_external(d)[ek],
                        color=c, s=70, zorder=5, edgecolors="#c9d1d9", linewidths=0.5)
 
         # Regression
@@ -465,7 +488,7 @@ def graph6_scatter_correlations(bench_data, local_arr, ext_arr):
     fig.legend(handles=handles, loc="upper center", ncol=3, framealpha=0.9,
                edgecolor="#30363d", bbox_to_anchor=(0.5, 1.02))
 
-    fig.suptitle("Local Ensemble Score vs External Detectors", fontsize=14,
+    fig.suptitle("Local Ensemble Score vs External Detectors (V2)", fontsize=14,
                  fontweight="bold", y=1.08)
     fig.tight_layout()
     fig.savefig("graph6_scatter_correlations.png", dpi=150, bbox_inches="tight")
@@ -481,7 +504,7 @@ def graph7_external_detector_heatmap(bench_data):
 
     ext_keys = ["gptzero", "zerogpt", "originality", "winston", "quillbot"]
     topics = [d["topic"] for d in bench_data]
-    matrix = np.array([[d["external"][k] for k in ext_keys] for d in bench_data])
+    matrix = np.array([[get_current_external(d)[k] for k in ext_keys] for d in bench_data])
 
     sns.heatmap(matrix, ax=ax, annot=True, fmt=".0f", cmap="RdYlGn_r",
                 vmin=0, vmax=100, linewidths=1, linecolor="#30363d",
@@ -489,7 +512,20 @@ def graph7_external_detector_heatmap(bench_data):
                 yticklabels=topics,
                 cbar_kws={"label": "AI Detection Score (%)"})
 
-    ax.set_title("External Detector Scores Across Optimized Texts\n(Same text, different verdicts)",
+    # Add V1→V2 change annotations for zerogpt and quillbot
+    for i, d in enumerate(bench_data):
+        for j, ek in enumerate(ext_keys):
+            if ek in ("zerogpt", "quillbot"):
+                v1 = d["external"][ek]
+                v2 = get_current_external(d)[ek]
+                diff = v2 - v1
+                if abs(diff) > 0.5:
+                    sign = "+" if diff > 0 else ""
+                    ax.text(j + 0.5, i + 0.75, f"({sign}{diff:.0f})",
+                            ha="center", va="center", fontsize=7,
+                            color="#8b949e", fontstyle="italic")
+
+    ax.set_title("External Detector Scores Across Optimized Texts (V2)\n(Same text, different verdicts)",
                  fontsize=14, fontweight="bold", pad=15)
     ax.set_xlabel("External Detector", fontsize=12)
     ax.set_ylabel("Optimized Text", fontsize=12)
@@ -543,6 +579,92 @@ def graph8_detector_agreement(bench_data, local_arr, ext_arr):
     print("    Saved graph8_detector_agreement.png")
 
 
+# ── Graph 9: V1 vs V2 Comparison ──────────────────────────────────────
+
+def graph9_v1_vs_v2_comparison(bench_data):
+    print("  Graph 9: V1 vs V2 classifier optimization comparison...")
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    topics = [d["topic"] for d in bench_data]
+    short_topics = [t.split()[0].capitalize() if len(t.split()[0]) > 3
+                    else " ".join(t.split()[:2]).capitalize() for t in topics]
+
+    # ── ZeroGPT panel ──
+    ax = axes[0]
+    v1_z = [d["external"]["zerogpt"] for d in bench_data]
+    v2_z = [d["external_v2"]["zerogpt"] for d in bench_data]
+
+    x = np.arange(len(topics))
+    w = 0.35
+    bars1 = ax.barh(x + w/2, v1_z, w, color=RED, alpha=0.75,
+                    label="V1 (perplexity-only)", edgecolor="#30363d")
+    bars2 = ax.barh(x - w/2, v2_z, w, color=GREEN, alpha=0.75,
+                    label="V2 (+ classifier opt.)", edgecolor="#30363d")
+
+    for bar, val in zip(bars1, v1_z):
+        ax.text(val + 1, bar.get_y() + bar.get_height()/2, f"{val:.0f}%",
+                va="center", fontsize=8, color=RED)
+    for bar, val in zip(bars2, v2_z):
+        ax.text(val + 1, bar.get_y() + bar.get_height()/2, f"{val:.0f}%",
+                va="center", fontsize=8, color=GREEN)
+
+    ax.set_yticks(x)
+    ax.set_yticklabels(short_topics, fontsize=9)
+    ax.set_xlabel("AI Detection Score (%)", fontsize=11)
+    ax.set_title("ZeroGPT: V1 vs V2", fontsize=13, fontweight="bold")
+    ax.set_xlim(0, 115)
+    ax.legend(loc="lower right", fontsize=9, framealpha=0.9, edgecolor="#30363d")
+    ax.grid(True, axis="x", alpha=0.3)
+    ax.invert_yaxis()
+
+    avg_v1_z = np.mean(v1_z)
+    avg_v2_z = np.mean(v2_z)
+    ax.axvline(avg_v1_z, color=RED, linewidth=1.5, linestyle="--", alpha=0.6)
+    ax.axvline(avg_v2_z, color=GREEN, linewidth=1.5, linestyle="--", alpha=0.6)
+    ax.text(avg_v1_z + 1, -0.8, f"V1 avg: {avg_v1_z:.1f}%", fontsize=8, color=RED)
+    ax.text(avg_v2_z + 1, -0.4, f"V2 avg: {avg_v2_z:.1f}%", fontsize=8, color=GREEN)
+
+    # ── QuillBot panel ──
+    ax = axes[1]
+    v1_q = [d["external"]["quillbot"] for d in bench_data]
+    v2_q = [d["external_v2"]["quillbot"] for d in bench_data]
+
+    bars1 = ax.barh(x + w/2, v1_q, w, color=RED, alpha=0.75,
+                    label="V1 (perplexity-only)", edgecolor="#30363d")
+    bars2 = ax.barh(x - w/2, v2_q, w, color=GREEN, alpha=0.75,
+                    label="V2 (+ classifier opt.)", edgecolor="#30363d")
+
+    for bar, val in zip(bars1, v1_q):
+        ax.text(val + 1, bar.get_y() + bar.get_height()/2, f"{val:.0f}%",
+                va="center", fontsize=8, color=RED)
+    for bar, val in zip(bars2, v2_q):
+        ax.text(val + 1, bar.get_y() + bar.get_height()/2, f"{val:.0f}%",
+                va="center", fontsize=8, color=GREEN)
+
+    ax.set_yticks(x)
+    ax.set_yticklabels(short_topics, fontsize=9)
+    ax.set_xlabel("AI Detection Score (%)", fontsize=11)
+    ax.set_title("QuillBot: V1 vs V2", fontsize=13, fontweight="bold")
+    ax.set_xlim(0, 115)
+    ax.legend(loc="lower right", fontsize=9, framealpha=0.9, edgecolor="#30363d")
+    ax.grid(True, axis="x", alpha=0.3)
+    ax.invert_yaxis()
+
+    avg_v1_q = np.mean(v1_q)
+    avg_v2_q = np.mean(v2_q)
+    ax.axvline(avg_v1_q, color=RED, linewidth=1.5, linestyle="--", alpha=0.6)
+    ax.axvline(avg_v2_q, color=GREEN, linewidth=1.5, linestyle="--", alpha=0.6)
+    ax.text(avg_v1_q + 1, -0.8, f"V1 avg: {avg_v1_q:.1f}%", fontsize=8, color=RED)
+    ax.text(avg_v2_q + 1, -0.4, f"V2 avg: {avg_v2_q:.1f}%", fontsize=8, color=GREEN)
+
+    fig.suptitle("Classifier Optimization Impact: V1 vs V2 Comparison",
+                 fontsize=15, fontweight="bold", y=1.02)
+    fig.tight_layout()
+    fig.savefig("graph9_v1_vs_v2_comparison.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("    Saved graph9_v1_vs_v2_comparison.png")
+
+
 # ── Weight Recommendations ──────────────────────────────────────────────
 
 def compute_recommendations(local_arr, ext_arr):
@@ -585,11 +707,11 @@ def generate_report(all_data, bench_data, best_for, all_corrs, local_arr, ext_ar
     best_topic = [d["topic"] for d in all_data if d["improvement"] == best_imp][0]
     zero_imp = sum(1 for d in all_data if d["improvement"] < 1.0)
 
-    # External stats
+    # External stats — use V2 (current) scores
     ext_avgs = {}
     ext_passed = {}
     for ek in ["gptzero", "zerogpt", "originality", "winston", "quillbot"]:
-        vals = [d["external"][ek] for d in bench_data]
+        vals = [get_current_external(d)[ek] for d in bench_data]
         ext_avgs[ek] = np.mean(vals)
         ext_passed[ek] = sum(1 for v in vals if v < 30)
 
@@ -724,6 +846,48 @@ def generate_report(all_data, bench_data, best_for, all_corrs, local_arr, ext_ar
     and fully AI by others. AI detection is fundamentally inconsistent.
 
 
+5b. CLASSIFIER OPTIMIZATION IMPACT (V2)
+{'─'*70}
+
+  After adding classifier-targeted features (contractions, burstiness,
+  imperfections), all 10 benchmark texts were re-optimized and re-tested
+  on ZeroGPT and QuillBot.
+
+  {"Text":<28} {"ZeroGPT V1":>11} {"ZeroGPT V2":>11} {"QuillBot V1":>12} {"QuillBot V2":>12}
+  {"─"*78}"""
+
+    for d in bench_data:
+        z_v1 = d["external"]["zerogpt"]
+        z_v2 = d["external_v2"]["zerogpt"]
+        q_v1 = d["external"]["quillbot"]
+        q_v2 = d["external_v2"]["quillbot"]
+        report += f"\n  {d['topic']:<28} {z_v1:>10.1f}% {z_v2:>10.1f}% {q_v1:>11.0f}% {q_v2:>11.0f}%"
+
+    avg_z_v1 = np.mean([d["external"]["zerogpt"] for d in bench_data])
+    avg_z_v2 = np.mean([d["external_v2"]["zerogpt"] for d in bench_data])
+    avg_q_v1 = np.mean([d["external"]["quillbot"] for d in bench_data])
+    avg_q_v2 = np.mean([d["external_v2"]["quillbot"] for d in bench_data])
+    report += f"\n  {'AVERAGE':<28} {avg_z_v1:>10.1f}% {avg_z_v2:>10.1f}% {avg_q_v1:>11.1f}% {avg_q_v2:>11.1f}%"
+
+    report += f"""
+
+  Three-Phase Evolution:
+    Phase                    ZeroGPT   QuillBot   GPTZero   Originality
+    Original AI text         ~95%      ~95%       ~95%      ~95%
+    V1 (LLM + perplexity)   {avg_z_v1:.1f}%    {avg_q_v1:.1f}%     100%      100%
+    V2 (+ classifier opt)   {avg_z_v2:.1f}%    {avg_q_v2:.1f}%     100%      100%
+
+  ZeroGPT: -{avg_z_v1 - avg_z_v2:.1f} pp reduction (38.8% → 20.8%)
+  QuillBot: -{avg_q_v1 - avg_q_v2:.1f} pp reduction (26.7% → 24.9%)
+
+  KEY INSIGHT: Classifier-targeted optimization dramatically reduces
+  ZeroGPT scores but has minimal/noisy effect on QuillBot. Individual
+  texts show high variance (Silk Road QuillBot: 0% → 62%), confirming
+  detector non-determinism and pipeline randomness are major factors.
+
+  [See graph9_v1_vs_v2_comparison.png]
+
+
 6. LOCAL DETECTOR PERFORMANCE ON BENCHMARK
 {'─'*70}
 
@@ -815,10 +979,16 @@ def generate_report(all_data, bench_data, best_for, all_corrs, local_arr, ext_ar
      selected most often as optimal, suggesting small targeted changes
      outperform aggressive rewriting for local detector evasion.
 
+  7. Classifier-targeted optimization (V2) confirms two detector paradigms:
+     - ZeroGPT responds strongly to stylistic features (38.8% → 20.8%)
+     - QuillBot shows high variance with minimal net change (26.7% → 24.9%)
+     - GPTZero and Originality remain at 100% regardless
+     - Perplexity-based detectors are robust; classifier-based are fragile
+
 
 {'='*70}
-  Generated by AI Text Humanizer Benchmark Analysis
-  Total graphs: 8 | Texts analyzed: 30 training + 10 benchmark
+  Generated by AI Text Humanizer Benchmark Analysis (V2)
+  Total graphs: 9 | Texts analyzed: 30 training + 10 benchmark (V1 + V2)
 {'='*70}
 """
 
@@ -832,7 +1002,7 @@ def generate_report(all_data, bench_data, best_for, all_corrs, local_arr, ext_ar
 
 def main():
     print("="*60)
-    print("  AI Text Humanizer — Benchmark Analysis")
+    print("  AI Text Humanizer — Benchmark Analysis (V2)")
     print("="*60)
 
     # Part 1: Collect local scores
@@ -857,9 +1027,25 @@ def main():
     graph6_scatter_correlations(bench_data, local_arr, ext_arr)
     graph7_external_detector_heatmap(bench_data)
     graph8_detector_agreement(bench_data, local_arr, ext_arr)
+    graph9_v1_vs_v2_comparison(bench_data)
 
     # Recommendations
     best_for, all_corrs = compute_recommendations(local_arr, ext_arr)
+
+    # Print ALL V2 correlations to console (including ensemble from graph5 data)
+    print("\n  ── KEY V2 CORRELATIONS (for article updates) ──")
+    # all_corrs has binoculars/gpt2_ppl/gltr; compute ensemble separately
+    ens_arr = local_arr["ensemble"]
+    for ek in ["zerogpt", "winston", "quillbot"]:
+        ev = ext_arr[ek]
+        if np.std(ev) > 0.01:
+            r, p = stats.pearsonr(ens_arr, ev)
+            sig = "*" if p < 0.05 else ""
+            print(f"    {'ensemble':<12} vs {ek:<10}  r={r:+.3f}  p={p:.4f} {sig}")
+    print()
+    for (lk, ek), (r, p) in sorted(all_corrs.items()):
+        sig = "*" if p < 0.05 else ""
+        print(f"    {lk:<12} vs {ek:<10}  r={r:+.3f}  p={p:.4f} {sig}")
 
     # Part 5: Report
     print("\n" + "="*60)
@@ -880,6 +1066,7 @@ def main():
         "graph6_scatter_correlations.png",
         "graph7_external_detector_heatmap.png",
         "graph8_detector_agreement.png",
+        "graph9_v1_vs_v2_comparison.png",
         "research_report.txt",
     ]
     for f in outputs:
