@@ -306,6 +306,8 @@ Our findings reveal a fundamental reliability problem in AI text detection: no c
 
 This has immediate practical implications. In educational settings, a student's essay may be flagged or cleared depending on which tool their institution licenses. Given the CDT (2025) finding that 43% of US teachers use AI detectors, thousands of academic integrity decisions are potentially being made using tools that disagree with each other more than they agree.
 
+The fairness implications are particularly concerning for non-native English speakers. Liang et al. (2023) tested seven widely-used detectors on TOEFL essays written by non-native speakers and found false positive rates averaging above 61%, while the same tools barely flagged native English samples. In other words, these tools may penalize students simply for having a more constrained vocabulary — a bias that compounds the cross-detector inconsistency we document.
+
 The problem is not merely that detectors have different sensitivity thresholds — it is that they measure different properties of text. Adjusting thresholds cannot reconcile detectors that respond to opposite signals.
 
 ### 5.2 Two Detection Paradigms
@@ -316,13 +318,15 @@ Our correlation and agreement analyses identify two distinct detection paradigms
 
 **Classifier-based detection** (ZeroGPT, QuillBot) appears to rely on learned stylistic features: contraction frequency, sentence length variance (burstiness), informal marker presence, and structural regularity. These features correlate with human vs. AI writing in training data but are easily manipulated. Our classifier-targeted optimization — adding contractions, increasing burstiness, and injecting writing imperfections — reduced ZeroGPT scores from 38.8% to 20.8% with minimal impact on text quality.
 
+Notably, Hans et al. (2024) found that Binoculars scored identically on ESL writing regardless of whether grammar corrections had been applied, maintaining the same detection threshold in both cases. This suggests perplexity-based approaches may be inherently less biased against non-native speakers than classifier-based ones, which rely on stylistic features that correlate with English fluency.
+
 Neither paradigm alone provides reliable detection. Perplexity-based methods are robust but may produce false positives on formulaic human writing. Classifier-based methods capture genuine stylistic differences but are trivially bypassed by prompt engineering.
 
 ### 5.3 The Arms Race and Sustainable Alternatives
 
 Our results demonstrate a clear detection-evasion arms race. Each optimization technique we developed exploits a specific detector weakness: cross-model rewriting disrupts per-model signatures, vocabulary replacement targets telltale word patterns, and classifier-targeted features exploit stylistic heuristics.
 
-This arms race is unlikely to converge. As Sadasivan et al. (2023) showed theoretically, the fundamental overlap between human and machine text distributions grows as models improve. Sustainable alternatives to detection may include:
+This arms race is unlikely to converge. Liang et al. (2023) demonstrated that a single self-edit prompt — "Elevate the provided text by employing literary language" — reduced seven commercial detectors' accuracy from 100% to as low as 13% on ChatGPT-generated college essays, confirming that classifier-based detectors are far more fragile than their deployment suggests. As Sadasivan et al. (2023) showed theoretically, the fundamental overlap between human and machine text distributions grows as models improve. Sustainable alternatives to detection may include:
 
 - **Watermarking** (Kirchenbauer et al., 2023): Embedding statistical signals during generation provides provable detection guarantees but requires model-provider cooperation.
 - **Provenance tracking:** Cryptographic attestation of text origin (e.g., C2PA content credentials) sidesteps the detection problem entirely.
@@ -370,17 +374,17 @@ Future work should expand the benchmark to include larger text samples, API-leve
 
 ## References
 
-Center for Democracy and Technology. (2025). *AI in Education: Teacher Perspectives on AI Detection Tools.* CDT Research Report.
+Center for Democracy and Technology. (2025). *Hand in Hand: Schools' Embrace of AI Connected to Increased Risks to Students.* CDT Research Report. https://cdt.org/wp-content/uploads/2025/10/FINAL-CDT-2025-Hand-in-Hand-Polling-100225-accessible.pdf
 
-Gehrmann, S., Strobelt, H., & Rush, A. M. (2019). GLTR: Statistical Detection and Visualization of Generated Text. In *Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics: System Demonstrations*, pp. 111-116.
+Gehrmann, S., Strobelt, H., & Rush, A. M. (2019). GLTR: Statistical Detection and Visualization of Generated Text. In *Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics: System Demonstrations*, pp. 111-116. https://arxiv.org/abs/1906.04043
 
-Hans, A., Schwarzschild, A., Cheber, V., Lakkaraju, H., & Barak, B. (2024). Spotting LLMs with Binoculars: Zero-Shot Detection of Machine-Generated Text. In *Proceedings of the 41st International Conference on Machine Learning (ICML 2024)*.
+Hans, A., Schwarzschild, A., Cherepanova, V., Kazemi, H., Saha, A., Goldblum, M., Geiping, J., & Goldstein, T. (2024). Spotting LLMs With Binoculars: Zero-Shot Detection of Machine-Generated Text. In *Proceedings of the 41st International Conference on Machine Learning (ICML 2024)*. https://arxiv.org/abs/2401.12070
 
 Kirchenbauer, J., Geiping, J., Wen, Y., Katz, J., Miers, I., & Goldstein, T. (2023). A Watermark for Large Language Models. In *Proceedings of the 40th International Conference on Machine Learning (ICML 2023)*.
 
 Krishna, K., Song, Y., Karpinska, M., Wieting, J., & Iyyer, M. (2023). Paraphrasing Evades Detectors of AI-Generated Text, but Retrieval is an Effective Defense. In *Advances in Neural Information Processing Systems 36 (NeurIPS 2023)*.
 
-Liang, W., Yuksekgonul, M., Mao, Y., Wu, E., & Zou, J. (2023). GPT detectors are biased against non-native English writers. *Patterns*, 4(7), 100779.
+Liang, W., Yuksekgonul, M., Mao, Y., Wu, E., & Zou, J. (2023). GPT detectors are biased against non-native English writers. *Patterns*, 4(7), 100779. https://arxiv.org/abs/2304.02819
 
 Mitchell, E., Lee, Y., Khazatsky, A., Manning, C. D., & Finn, C. (2023). DetectGPT: Zero-Shot Machine-Generated Text Detection using Probability Curvature. In *Proceedings of the 40th International Conference on Machine Learning (ICML 2023)*.
 
@@ -388,7 +392,21 @@ OpenAI. (2023). GPT-4 Technical Report. *arXiv preprint arXiv:2303.08774*.
 
 Sadasivan, V. S., Kumar, A., Balasubramanian, S., Wang, W., & Feizi, S. (2023). Can AI-Generated Text be Reliably Detected? *arXiv preprint arXiv:2303.11156*.
 
+Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., & Sutskever, I. (2019). Language Models are Unsupervised Multitask Learners. *OpenAI Technical Report*.
+
+Reimers, N. & Gurevych, I. (2019). Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks. In *Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing (EMNLP 2019)*. https://arxiv.org/abs/1908.10084
+
 Tian, E. (2023). GPTZero: Towards Detection of AI-Generated Text. *Undergraduate thesis, Princeton University*.
+
+Agrawal, S. & Goyal, N. (2012). Analysis of Thompson Sampling for the Multi-armed Bandit Problem. In *Proceedings of the 25th Annual Conference on Learning Theory (COLT 2012)*. https://arxiv.org/abs/1111.1797
+
+Watkins, C. J. C. H. & Dayan, P. (1992). Q-learning. *Machine Learning*, 8(3), 279-292. https://doi.org/10.1007/BF00992698
+
+Anthropic. (2026). Claude Sonnet 4.6 Model Card. https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-6
+
+DeepSeek-AI. (2025). DeepSeek-V3 Technical Report. https://github.com/deepseek-ai/DeepSeek-V3
+
+Genc, O. (2025). AI Text Humanizer: AI-generated text optimizer using BERT MLM + Q-Learning + 4-detector ensemble. *GitHub*. https://github.com/onurcangnc/ai-text-humanizer
 
 ---
 
