@@ -7,7 +7,6 @@ __pycache__/
 # Training outputs (large files)
 training_data/
 learning_data/
-optimized_*.txt
 
 # Debug files
 debug_*.png
